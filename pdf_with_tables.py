@@ -70,12 +70,6 @@ def get_page_elements(pdf_path):
             })
     return pages_output
 
-def check_nested(current_cell, tables):
-    __, score = process.extractOne(current_cell, tables)
-    if score > 80:
-        return True
-    return False
-
 def get_all_tables(pdf_pages: Iterable[dict]) -> Tuple[List[Any], List[str]]:
     """
     Return (tables, tables_flatted)
@@ -119,22 +113,6 @@ def get_all_tables(pdf_pages: Iterable[dict]) -> Tuple[List[Any], List[str]]:
 
     return tables, tables_flatted
 
-
-def fix_nested_table(table, tables, tables_flatted):
-    '''fix for a table inside a table
-    if there is a table inside a table, 
-    returning a fixed table that the value is a table, not messy text'''
-    for index_row, row in enumerate(table):
-        for index_col, cell in enumerate(row):
-            one,score = process.extractOne(cell, tables_flatted, scorer=fuzz.token_sort_ratio)
-            if score>80:
-                idx = tables_flatted.index(one)
-                # update the table inside a table with real table
-                table[index_row][index_col] = tables[idx]
-    return table
-            
-# def change_
-
 def clean_table(table):
     '''
     clean None with previous cell (based on result, None value is the previous. Ex: CP_Perjalanan Dinas)
@@ -144,6 +122,44 @@ def clean_table(table):
             if cell==None and i>0:
                 row[i] = row[i-1]
     return table
+
+def change_to_records(table):
+    '''change table format from a list of list to records'''
+    table = clean_table(table)
+    headers = table[0]
+    data_rows = table[1:]
+    # Use a list comprehension to build the list of dictionaries
+    records = [dict(zip(headers, row)) for row in data_rows]
+    return records
+
+def fix_nested_table(table, tables, tables_flatted):
+    '''fix for a table inside a table
+    if there is a table inside a table, 
+    returning a fixed table that the value is a table, not messy text'''
+    for index_row, row in enumerate(table):
+        for index_col, cell in enumerate(row):
+            if cell and isinstance(cell, str):
+                if len(cell)>20: # only check for long text
+                    one,score = process.extractOne(cell, tables_flatted, scorer=fuzz.token_sort_ratio)
+                    if score>80:
+                        idx = tables_flatted.index(one)
+                        # update the table inside a table with real table
+                        cleaned_table = clean_table(tables[idx])
+                        cleaned_table = change_to_records(cleaned_table)
+                        table[index_row][index_col] = cleaned_table
+    return table
+            
+def check_and_fix_nested_tables(pdf_pages):
+    '''check and fix nested table'''
+    tables, tables_flatted = get_all_tables(pdf_pages)
+    for page_idx, page in enumerate(pdf_pages):
+        if page['tables']:
+            for i, dct in enumerate(page['tables']):
+                if dct['table_dct']:
+                    table = dct['table_dct']
+                    fixed_table = fix_nested_table(table, tables, tables_flatted)
+                pdf_pages[page_idx]['tables'][i]['table_dct'] = fixed_table
+    return pdf_pages
 
 def change_table_format(pdf_pages):
     '''change table format from a list of list to records'''
