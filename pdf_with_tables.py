@@ -175,3 +175,22 @@ def change_table_format(pdf_pages):
                 pdf_pages[page_idx]['tables'][i]['table_dct'] = records
     return pdf_pages
 
+def extract_pdf_content(file):
+    """
+    Extract all texts from a PDF file, including narrative text and tables.
+
+    Steps:
+    1. Parse each page to extract narrative text and tables.
+    2. Fix nested tables (tables embedded as text within other tables).
+    3. Convert table format from list of lists to list of records (dicts).
+
+    Args:
+        file (str): Path to the PDF file.
+
+    Returns:
+        List[dict]: List of page dictionaries containing narrative text and tables.
+    """
+    pdf_pages = get_page_elements(file)                # Step 1: Extract page elements
+    pdf_pages = check_and_fix_nested_tables(pdf_pages) # Step 2: Fix nested tables
+    pdf_pages = change_table_format(pdf_pages)         # Step 3: Format tables as records
+    return pdf_pages
