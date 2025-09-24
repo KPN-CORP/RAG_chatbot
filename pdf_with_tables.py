@@ -148,7 +148,79 @@ def fix_nested_table(table, tables, tables_flatted):
                         cleaned_table = change_to_records(cleaned_table)
                         table[index_row][index_col] = cleaned_table
     return table
+
+def check_double_header(table_data):
+    """
+    Analyzes a table's structure and returns its type.
+    """
+    if len(table_data) < 2:
+        return False # or "too_small"
+
+    header_row_1 = table_data[0]
+    header_row_2 = table_data[1]
+
+    # Heuristic for the complex table:
+    # Does the second row have non-None values under None values in the first?
+    # This is a strong sign of a merged, hierarchical header.
+
+    for i, item in enumerate(header_row_1):
+        if item is None and header_row_2[i] is not None:
+            return True
+    
+    # Heuristic for a simple table:
+    # The first row is full and the second row looks like data.
+    if all(isinstance(h, str) for h in header_row_1):
+        return False
+        
+    return False # Default fallback
+
+def process_complex_table(table_data):
+    """
+    Processes a complex, multi-header table into a list of dictionaries (records),
+    where each dictionary represents a row.
+    """
+    if len(table_data) < 3:
+        # Not enough rows for headers and data
+        return []
+
+    # --- Step 1: Reconstruct and Flatten the Headers (No changes here) ---
+    header_row_1 = table_data[0]
+    header_row_2 = table_data[1]
+    
+    # Forward-fill the top-level headers
+    filled_header_1 = []
+    last_header = ""
+    for header in header_row_1:
+        if header is not None:
+            last_header = header
+        filled_header_1.append(last_header)
+
+    # Combine headers into a final, flat list
+    flattened_headers = []
+    for i, sub_header in enumerate(header_row_2):
+        main_header = filled_header_1[i]
+        if sub_header:
+            clean_sub_header = sub_header.replace('\n', ' ')
+            flattened_headers.append(f"{main_header} - {clean_sub_header}")
+        else:
+            flattened_headers.append(main_header)
+
+    # --- Step 2: Build a List of Records (This part is new) ---
+    records = []
+    data_rows = table_data[2:] # The rest of the list is data
+
+    for row in data_rows:
+        # Skip any row that is empty or doesn't have a primary identifier
+        if not row or row[0] is None:
+            continue
+
+        # Create a dictionary for the current row by zipping headers and row values
+        # The dict() constructor combined with zip() is a concise way to do this.
+        record = dict(zip(flattened_headers, row))
+        records.append(record)
             
+    return records
+
 def check_and_fix_nested_tables(pdf_pages):
     '''check and fix nested table'''
     tables, tables_flatted = get_all_tables(pdf_pages)
@@ -162,16 +234,20 @@ def check_and_fix_nested_tables(pdf_pages):
     return pdf_pages
 
 def change_table_format(pdf_pages):
-    '''change table format from a list of list to records'''
+    '''change table format from a list of list to records and handle double header'''
     for page_idx, page in enumerate(pdf_pages):
         if page['tables']:
             for i, dct in enumerate(page['tables']):
                 if dct['table_dct']:
+                    is_double_header = check_double_header(dct['table_dct'])
                     table = clean_table(dct['table_dct'])
-                    headers = table[0]
-                    data_rows = table[1:]
-                    # Use a list comprehension to build the list of dictionaries
-                    records = [dict(zip(headers, row)) for row in data_rows]
+                    if is_double_header:
+                        records = process_complex_table(dct['table_dct'])
+                    else:
+                        headers = table[0]
+                        data_rows = table[1:]
+                        # Use a list comprehension to build the list of dictionaries
+                        records = [dict(zip(headers, row)) for row in data_rows]
                 pdf_pages[page_idx]['tables'][i]['table_dct'] = records
     return pdf_pages
 
@@ -193,4 +269,5 @@ def extract_pdf_content(file):
     pdf_pages = get_page_elements(file)                # Step 1: Extract page elements
     pdf_pages = check_and_fix_nested_tables(pdf_pages) # Step 2: Fix nested tables
     pdf_pages = change_table_format(pdf_pages)         # Step 3: Format tables as records
+
     return pdf_pages

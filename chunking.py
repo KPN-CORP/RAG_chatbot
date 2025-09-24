@@ -74,15 +74,18 @@ def canonicalize_text(s: str, lower: bool = False) -> str:
         s = ""
     s = unicodedata.normalize("NFC", str(s))
     s = s.strip()
-    s = re.sub(r'\s+', ' ', s)
-    if lower:
-        s = s.lower()
+    s = re.sub(r"\s+", " ", s).strip()
+    # normalize smart quotes
+    s = s.replace("“", '"').replace("”", '"').replace("’", "'").replace("`", "'")
+    # normalize common dash placeholders
+    if s in ["-", "—", "–", "n/a", "N/A", "NA", "null", "None"]:
+        return ""
     return s
 
 def sha256_checksum(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-def row_dict_to_text(row: Dict[str, Any]) -> str:
+def row_dict_to_text_old(row: Dict[str, Any]) -> str:
     """
     Convert a row dict into a stable text string for embedding/checksum.
     Sort keys for deterministic order and canonicalize values.
@@ -96,6 +99,61 @@ def row_dict_to_text(row: Dict[str, Any]) -> str:
         v = canonicalize_text(str(v))
         parts.append(f"{k}: {v}")
     return " | ".join(parts)
+
+def row_dict_to_text(row: Dict[str, Any]) -> str:
+    """
+    Convert a row dict into a stable, LLM- and vector-db-friendly text string.
+    - Keeps the same signature and return type as your original function.
+    - Produces natural-language sentences (one per non-empty cell) joined by newlines.
+    - Deterministic ordering: keys sorted case-insensitively.
+    - Canonicalizes whitespace and normalizes common "empty" tokens.
+    - If a common primary key like 'Gol.'/'Gol'/'ID' exists, sentences are prefixed with it
+      (e.g. "For Gol. 9, the value for 'Header' is ...").
+    """
+
+    if not isinstance(row, dict):
+        return canonicalize_text(row)
+
+    # deterministic key order
+    keys = sorted(row.keys(), key=lambda k: str(k).lower())
+
+    # detect a primary-key-like column if present
+    pk_candidates = [k for k in keys if str(k).lower() in {"gol.", "gol", "id", "no", "nomor", "kode"}]
+    primary_key = pk_candidates[0] if pk_candidates else None
+    primary_val = canonicalize_text(row.get(primary_key)) if primary_key else ""
+
+    sentences = []
+    for k in keys:
+        # canonicalize header and value
+        header = canonicalize_text(k)
+        value = canonicalize_text(row.get(k))
+        # skip empties
+        if value == "":
+            continue
+        # keep header readable but bounded
+        if len(header) > 120:
+            header = header[:80].rstrip() + " … " + header[-30:].lstrip()
+        # create LLM-friendly sentence; prefer "For <PK>" when available and this isn't the PK cell itself
+        if primary_key and k != primary_key and primary_val:
+            sentence = f"For {primary_key} {primary_val}, the value for '{header}' is {value}."
+        elif primary_key and k == primary_key:
+            # describe the primary key itself
+            sentence = f"{primary_key}: {value}."
+        else:
+            sentence = f"The value for '{header}' is {value}."
+        sentences.append(sentence)
+
+    # fallback: if everything was empty (or only primary present but skipped), return canonicalized row repr
+    if not sentences:
+        # produce compact "k: v | k2: v2" style as last resort (deterministic)
+        parts = []
+        for k in keys:
+            v = canonicalize_text(row.get(k))
+            parts.append(f"{k}: {v}" if v else f"{k}:")
+        return " | ".join(parts)
+
+    # join sentences with newline to keep single-string output while preserving chunk granularity
+    return "\n".join(sentences)
 
 def pages_to_chunks(
     pdf_pages: List[Dict[str, Any]],
