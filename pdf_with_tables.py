@@ -174,7 +174,35 @@ def check_double_header(table_data):
         
     return False # Default fallback
 
-def process_complex_table(table_data):
+def check_triple_header(table_data):
+    """
+    Analyzes a table's structure and returns its type.
+    """
+    if len(table_data) < 2:
+        return False # or "too_small"
+
+    header_row_2 = table_data[1]
+    header_row_3 = table_data[2]
+
+    # Heuristic for the complex table:
+    # Does the third row have non-None values under None values in the second?
+    # This is a strong sign of a merged, hierarchical header.
+
+    for i, item in enumerate(header_row_2):
+#         print('item:', item, "below:", header_row_3[i])
+        if item is None and header_row_3[i] is not None and i>0:
+#             print('   ^True')
+            return True
+    
+    # Heuristic for a simple table:
+    # The first row is full and the second row looks like data.
+    if all(isinstance(h, str) for h in header_row_2):
+        return False
+        
+    return False # Default fallback
+
+
+def process_double_header_table(table_data):
     """
     Processes a complex, multi-header table into a list of dictionaries (records),
     where each dictionary represents a row.
@@ -221,6 +249,64 @@ def process_complex_table(table_data):
             
     return records
 
+def process_triple_header_table(table_data):
+    """
+    Processes a complex, TRIPLE-header table into a list of dictionaries (records).
+    """
+    if len(table_data) < 4:  # 3 header rows + at least 1 data row
+        return []
+
+    # --- Step 1: Reconstruct and Flatten the Three-Level Headers ---
+    header_row_1 = table_data[0]
+    header_row_2 = table_data[1]
+    header_row_3 = table_data[2]
+
+    # Level 1: Forward-fill the top-most header row
+    filled_header_1 = []
+    last_header = ""
+    for header in header_row_1:
+        if header is not None:
+            last_header = header.replace('\n', ' ')
+        filled_header_1.append(last_header)
+
+    # Level 2: Forward-fill the middle header row
+    filled_header_2 = []
+    last_header = ""
+    for i, header in enumerate(header_row_2):
+        # Reset fill if the top-level header changes, making it more robust
+        if filled_header_1[i] != filled_header_1[i-1] and i > 0:
+            last_header = ""
+        if header is not None:
+            last_header = header.replace('\n', ' ')
+        filled_header_2.append(last_header)
+
+    # Level 3: Combine all three filled headers into a final, flat list
+    flattened_headers = []
+    for i in range(len(header_row_1)):
+        # Collect parts from all three levels, cleaning newlines
+        h1 = filled_header_1[i]
+        h2 = filled_header_2[i]
+        h3 = header_row_3[i].replace('\n', ' ') if header_row_3[i] else ""
+
+        # Build the final header by joining the parts that are not empty
+        parts = [part for part in [h1, h2, h3] if part]
+        unique_parts = list(dict.fromkeys(parts)) # Remove duplicates like 'Gol.' - 'Gol.'
+        final_header = " - ".join(unique_parts)
+        flattened_headers.append(final_header)
+
+    # --- Step 2: Build a List of Records (Same logic as before) ---
+    records = []
+    data_rows = table_data[3:]  # The rest is data
+
+    for row in data_rows:
+        if not row or row[0] is None:
+            continue
+
+        record = dict(zip(flattened_headers, row))
+        records.append(record)
+            
+    return records
+
 def check_and_fix_nested_tables(pdf_pages):
     '''check and fix nested table'''
     tables, tables_flatted = get_all_tables(pdf_pages)
@@ -240,9 +326,15 @@ def change_table_format(pdf_pages):
             for i, dct in enumerate(page['tables']):
                 if dct['table_dct']:
                     is_double_header = check_double_header(dct['table_dct'])
-                    table = clean_table(dct['table_dct'])
                     if is_double_header:
-                        records = process_complex_table(dct['table_dct'])
+                        is_triple_header = check_triple_header(dct['table_dct'])
+
+                    table = clean_table(dct['table_dct'])
+
+                    if is_triple_header:
+                        records = process_triple_header_table(dct['table_dct'])
+                    elif is_double_header:
+                        records = process_double_header_table(dct['table_dct'])
                     else:
                         headers = table[0]
                         data_rows = table[1:]

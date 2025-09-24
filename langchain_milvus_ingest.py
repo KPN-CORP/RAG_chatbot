@@ -43,6 +43,7 @@ def chunks_to_records(chunks: List[Dict[str, Any]]) -> List[Tuple[str, str, str,
             "element_type": c.get("element_type"),
             "table_id": c.get("table_id"),
             "row_id": c.get("row_id"),
+            "list_id": c.get("list_id"),
         }
         records.append((chunk_id, text, checksum, metadata))
     return records

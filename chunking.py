@@ -1,18 +1,4 @@
-from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType, utility
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-try:
-    # preferred provider package name
-    from langchain_google_genai import GoogleGenerativeAIEmbeddings
-except Exception:
-    try:
-        # other community/provider naming possibilities
-        from langchain.embeddings import GoogleGenerativeAIEmbeddings  # hypothetical fallback
-    except Exception:
-        raise ImportError(
-            "Unable to import GoogleGenerativeAIEmbeddings. "
-            "Install the LangChain Google GenAI provider (e.g. `pip install langchain-google-genai`) "
-            "and ensure LangChain is up to date."
-        )
 
 import hashlib
 import unicodedata
@@ -21,52 +7,6 @@ import uuid
 import time
 from typing import List, Dict, Any
 
-
-def pages_to_chunks_old(pdf_pages, source, chunk_size=500, chunk_overlap=50):
-    '''convert pdf pages to chunks'''
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        length_function=len,
-        separators=["\n\n", "\n", " ", ""]
-    )
-    all_chunks = []
-    table_id = 0
-    chunk_id = 0
-    for page in pdf_pages:
-        content = page['narrative_text']
-        if content.strip():  # Check if content is not empty
-            chunks = text_splitter.split_text(content)
-            for chunk in chunks:
-                chunk_id += 1
-                chunk_metadata = {
-                    'source':source,
-                    'page_number': page['page'],
-                    'element_type': 'narrative',
-                    'table_id': None,
-                    'chunk_id': chunk_id,
-                    'chunk_text': chunk,
-                    'checksum': chunk  # not yet coded
-                }
-                all_chunks.append(chunk_metadata)
-        tables = page['tables']
-        if tables:
-            for t in tables:
-                table_id += 1
-                if t['table_dct']:
-                    for row in t['table_dct']:
-                        chunk = " | ".join([f"{k}: {v}" for k, v in row.items()])
-                        chunk_metadata = {
-                            'source':source,
-                            'page_number': page['page'],
-                            'element_type': 'table',
-                            'table_id': table_id,
-                            'chunk_id': chunk_id,
-                            'chunk_text': chunk,
-                            'checksum': chunk  # not yet coded
-                        }
-                        all_chunks.append(chunk_metadata)
-    return all_chunks
 
 def canonicalize_text(s: str, lower: bool = False) -> str:
     """Normalize text for stable checksum: unicode, collapse whitespace, optional lowercase."""
@@ -84,21 +24,6 @@ def canonicalize_text(s: str, lower: bool = False) -> str:
 
 def sha256_checksum(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-def row_dict_to_text_old(row: Dict[str, Any]) -> str:
-    """
-    Convert a row dict into a stable text string for embedding/checksum.
-    Sort keys for deterministic order and canonicalize values.
-    """
-    if not isinstance(row, dict):
-        return canonicalize_text(str(row))
-    keys = sorted(row.keys(), key=lambda k: str(k).lower())
-    parts = []
-    for k in keys:
-        v = row.get(k, "")
-        v = canonicalize_text(str(v))
-        parts.append(f"{k}: {v}")
-    return " | ".join(parts)
 
 def row_dict_to_text(row: Dict[str, Any]) -> str:
     """
@@ -155,6 +80,244 @@ def row_dict_to_text(row: Dict[str, Any]) -> str:
     # join sentences with newline to keep single-string output while preserving chunk granularity
     return "\n".join(sentences)
 
+# ---------- Helper functions (from earlier answers) ----------
+_sentence_split_re = re.compile(r'(?<=[\.\?!])\s+|\n+')
+
+def split_into_units(text: str) -> List[str]:
+    t = text.replace('\r\n', '\n').strip()
+    lines = t.split('\n')
+    units = []
+    buffer = []
+    for line in lines:
+        sline = line.strip()
+        if not sline:
+            if buffer:
+                units.append(" ".join(buffer).strip())
+                buffer = []
+            continue
+
+        # Heading heuristic
+        if len(sline) <= 80 and re.match(r'^[A-Z0-9 \-\/]+$', sline) and sum(1 for c in sline if c.isupper())/max(1,len(sline)) > 0.4:
+            if buffer:
+                units.append(" ".join(buffer).strip())
+                buffer = []
+            units.append(sline)
+            continue
+
+        # Bullets
+        if re.match(r'^[\u2022\u2023\u25E6\u2043\u2219\-\*\•\●]\s+', sline) or sline.startswith('●'):
+            if buffer:
+                units.append(" ".join(buffer).strip())
+                buffer = []
+            units.append(re.sub(r'^[\u2022\u2023\u25E6\u2043\u2219\-\*\•\●]\s*', '', sline))
+            continue
+
+        # Standalone numbers (like page markers)
+        if re.match(r'^\d+\s*$', sline):
+            if buffer:
+                units.append(" ".join(buffer).strip())
+                buffer = []
+            units.append(sline)
+            continue
+
+        if re.match(r'^\d+[\.\)]\s+', sline):
+            if buffer:
+                units.append(" ".join(buffer).strip())
+                buffer = []
+            units.append(sline)
+            continue
+
+        buffer.append(sline)
+
+    if buffer:
+        units.append(" ".join(buffer).strip())
+
+    # merge stray numeric separators with next if needed
+    merged = []
+    skip_next = False
+    for i, u in enumerate(units):
+        if skip_next:
+            skip_next = False
+            continue
+        if re.match(r'^\d+\s*$', u) and i+1 < len(units):
+            merged.append(f"{u} {units[i+1]}".strip())
+            skip_next = True
+        else:
+            merged.append(u)
+    return merged
+
+def split_long_unit_by_sentence(unit: str, max_chars: int) -> List[str]:
+    parts = [s.strip() for s in _sentence_split_re.split(unit) if s.strip()]
+    groups = []
+    cur = ""
+    for p in parts:
+        if len(cur) + len(p) + 1 <= max_chars:
+            cur = (cur + " " + p).strip() if cur else p
+        else:
+            if cur:
+                groups.append(cur)
+            if len(p) > max_chars:
+                for i in range(0, len(p), max_chars):
+                    groups.append(p[i:i+max_chars])
+                cur = ""
+            else:
+                cur = p
+    if cur:
+        groups.append(cur)
+    return groups
+
+def semantic_chunk(text: str, chunk_size: int = 500, chunk_overlap: int = 50) -> List[str]:
+    units = split_into_units(text)
+    chunks = []
+    cur = ""
+    for unit in units:
+        unit = unit.strip()
+        if not unit:
+            continue
+        if len(unit) > chunk_size:
+            if cur:
+                chunks.append(cur.strip())
+                cur = ""
+            pieces = split_long_unit_by_sentence(unit, chunk_size)
+            for p in pieces:
+                if chunks and chunk_overlap > 0:
+                    tail = chunks[-1][-chunk_overlap:]
+                    chunks.append((tail + " " + p).strip())
+                else:
+                    chunks.append(p)
+            continue
+
+        if cur and (len(cur) + 1 + len(unit) > chunk_size):
+            chunks.append(cur.strip())
+            if chunk_overlap > 0:
+                overlap_text = chunks[-1][-chunk_overlap:]
+                cur = overlap_text + " " + unit
+            else:
+                cur = unit
+        else:
+            cur = (cur + " " + unit).strip() if cur else unit
+
+    if cur:
+        chunks.append(cur.strip())
+    return chunks
+
+# ---------- List parser (returns item dicts) ----------
+_numbered_item_re = re.compile(r'^\s*(\d+)[\.\)]\s*(.*)', re.UNICODE)
+_bullet_item_re   = re.compile(r'^\s*[\u2022\u2023\u25E6\u2043\u2219\-\*\•\●]\s*(.*)', re.UNICODE)
+
+def parse_list_block(text_block: str, header_hint: str = None, list_id: str = None) -> List[Dict]:
+    import uuid as _uuid
+    if list_id is None:
+        list_id = str(_uuid.uuid4())
+
+    lines = [ln.rstrip() for ln in text_block.splitlines()]
+    lines = [ln for ln in lines if ln.strip() != ""]
+    header = header_hint
+    if not header and lines:
+        if re.match(r'^[A-Z0-9 \-/]{3,80}$', lines[0].strip()):
+            header = lines[0].strip()
+            lines = lines[1:]
+
+    items = []
+    buffer = None
+    current_pos = 0
+
+    def flush_buffer():
+        nonlocal buffer, items, current_pos
+        if buffer:
+            idx, txt = buffer
+            chunk_text = (header + " | " + txt) if header else txt
+            items.append({
+                "list_id": list_id,
+                "header": header,
+                "item_index": idx,
+                "text": txt,
+                "chunk_text": chunk_text,
+                "position": current_pos
+            })
+            current_pos += 1
+            buffer = None
+
+    for ln in lines:
+        ln_stripped = ln.strip()
+        m = _numbered_item_re.match(ln_stripped)
+        if m:
+            flush_buffer()
+            idx = int(m.group(1))
+            text_after = m.group(2).strip()
+            buffer = (idx, text_after)
+            continue
+
+        m2 = _bullet_item_re.match(ln_stripped)
+        if m2:
+            flush_buffer()
+            buffer = (None, m2.group(1).strip())
+            continue
+
+        if re.match(r'^\d+\s*$', ln_stripped):
+            flush_buffer()
+            continue
+
+        if buffer:
+            idx, prev = buffer
+            buffer = (idx, prev + " " + ln_stripped)
+        else:
+            buffer = (None, ln_stripped)
+
+    flush_buffer()
+    return items
+
+# ---------- Small helper: extract list blocks from a narrative ----------
+def extract_list_blocks(text: str) -> List[Dict[str, str]]:
+    """
+    Naive line-scanner that extracts consecutive lines that look like a list block:
+    A block starts when we see either:
+      - a heading-like line (short ALLCAPS) followed by lines that contain bullets or numbered items
+      - OR we encounter a line that starts with bullet/number and collect until blank or next big heading
+    Returns list of dicts: {"block": <text>, "header": <maybe header>}
+    """
+    lines = text.replace('\r\n', '\n').split('\n')
+    n = len(lines)
+    i = 0
+    blocks = []
+    while i < n:
+        ln = lines[i].strip()
+        if not ln:
+            i += 1
+            continue
+
+        # detect if this line is a heading candidate and next lines show list markers
+        header_candidate = None
+        if len(ln) <= 80 and re.match(r'^[A-Z0-9 \-\/]{3,80}$', ln) and i+1 < n:
+            # look ahead for bullet or numbered line in next 3 lines
+            lookahead = "\n".join(lines[i+1:min(n, i+5)])
+            if re.search(r'(^|\n)\s*[\u2022\-\*\•\●]|\n\s*\d+[\.\)]', lookahead):
+                header_candidate = ln
+                start = i + 1
+                # collect list lines
+                j = start
+                while j < n and lines[j].strip() != "":
+                    # stop if we reach another header-like line with no bullets following (conservative)
+                    j += 1
+                block_text = "\n".join(lines[i:j])
+                blocks.append({"block": block_text, "header": header_candidate, "start": i, "end": j})
+                i = j
+                continue
+
+        # detect direct list start (line starts with bullet or number)
+        if re.match(r'^[\u2022\-\*\•\●]\s+|^\d+[\.\)]\s+', ln) or ln.startswith('●'):
+            j = i
+            while j < n and lines[j].strip() != "":
+                j += 1
+            block_text = "\n".join(lines[i:j])
+            blocks.append({"block": block_text, "header": None, "start": i, "end": j})
+            i = j
+            continue
+
+        i += 1
+
+    return blocks
+
 def pages_to_chunks(
     pdf_pages: List[Dict[str, Any]],
     source: str,
@@ -165,14 +328,11 @@ def pages_to_chunks(
     """
     Convert cleaned/formatted pdf_pages into chunk metadata ready for dedupe/embedding.
     Each returned item is a dict with fields including chunk_id, chunk_text, checksum and metadata.
+    Upgraded pages_to_chunks:
+     - Extracts list blocks and indexes them as item-level chunks
+     - Removes list blocks from narrative before semantic chunking
     NOTE: This function does not persist or embed — it only returns canonical chunks.
     """
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        length_function=len,
-        separators=["\n\n", "\n", " ", ""]
-    )
 
     all_chunks: List[Dict[str, Any]] = []
     # table_index is local to each page (keeps original table_index); we'll also create unique table_id using source/page/table_index
@@ -183,7 +343,53 @@ def pages_to_chunks(
         if narrative and narrative.strip():
             # optional: canonicalize the narrative before splitting (keeps chunking deterministic)
             narrative_canon = canonicalize_text(narrative)
-            pieces = text_splitter.split_text(narrative_canon)
+            # 1) find list blocks and parse them into item-level chunks
+            list_blocks = extract_list_blocks(narrative_canon)
+            # keep track of ranges to remove from narrative
+            remove_spans = []
+            for lb in list_blocks:
+                block_text = lb["block"]
+                header_hint = lb.get("header")
+                items = parse_list_block(block_text, header_hint=header_hint)
+                for it in items:
+                    cid = uuid.uuid4().hex
+                    checksum = sha256_checksum(it["chunk_text"]) if 'sha256_checksum' in globals() else ""  # replace with your checksum fn
+                    meta = {
+                        "chunk_id": cid,
+                        "source": source,
+                        "page": page_num,
+                        "element_type": "list_item",
+                        "list_id": it["list_id"],
+                        "item_index": it["item_index"],
+                        "position": it["position"],
+                        "table_id": None,
+                        "row_id": None, 
+                        "language": language,
+                        "chunk_text": it["chunk_text"],
+                        "checksum": checksum,
+                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    }
+                    all_chunks.append(meta)
+
+                # mark span for removal
+                remove_spans.append((lb["start"], lb["end"]))
+
+            # remove list blocks from narrative by line indices (to avoid duplication)
+            if remove_spans:
+                lines = narrative_canon.split('\n')
+                keep_lines = []
+                for idx, ln in enumerate(lines):
+                    drop = False
+                    for s, e in remove_spans:
+                        if idx >= s and idx < e:
+                            drop = True
+                            break
+                    if not drop:
+                        keep_lines.append(ln)
+                narrative_canon = "\n".join(keep_lines).strip()
+
+            # 2) semantic-chunk the remaining narrative
+            pieces = semantic_chunk(narrative_canon, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
             for piece in pieces:
                 cid = uuid.uuid4().hex
                 checksum = sha256_checksum(canonicalize_text(piece))
@@ -194,6 +400,7 @@ def pages_to_chunks(
                     "element_type": "narrative",
                     "table_id": None,
                     "row_id": None,
+                    "list_id": None,
                     "bbox": None,
                     "language": language,
                     "chunk_text": piece,
@@ -224,6 +431,7 @@ def pages_to_chunks(
                         "table_id": table_id,
                         "table_index": table_index,
                         "row_id": ridx,
+                        "list_id": None,
                         "bbox": bbox,
                         "language": language,
                         "chunk_text": text,
@@ -256,6 +464,7 @@ def pages_to_chunks(
                                             "table_id": table_id,
                                             "table_index": table_index,
                                             "row_id": ridx,
+                                            "list_id": None,
                                             "bbox": bbox,
                                             "language": language,
                                             "chunk_text": text,
@@ -280,6 +489,7 @@ def pages_to_chunks(
                             "table_id": table_id,
                             "table_index": table_index,
                             "row_id": None,
+                            "list_id": None,
                             "bbox": bbox,
                             "language": language,
                             "chunk_text": text,
