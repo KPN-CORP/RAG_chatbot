@@ -1,6 +1,7 @@
 import pdfplumber
 from fuzzywuzzy import fuzz, process
-from typing import List, Tuple, Any, Iterable
+from typing import List, Dict, Tuple, Any, Iterable
+from collections import Counter
 import re
 
 def bbox_intersects(a, b):
@@ -326,8 +327,7 @@ def change_table_format(pdf_pages):
             for i, dct in enumerate(page['tables']):
                 if dct['table_dct']:
                     is_double_header = check_double_header(dct['table_dct'])
-                    if is_double_header:
-                        is_triple_header = check_triple_header(dct['table_dct'])
+                    is_triple_header = check_triple_header(dct['table_dct']) if is_double_header else False
 
                     table = clean_table(dct['table_dct'])
 

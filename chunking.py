@@ -6,6 +6,20 @@ import re
 import uuid
 import time
 from typing import List, Dict, Any
+from continuation_words import ind_continuation as _IND_CONT, english_continuation as _EN_CONT
+
+# ---------- Config / heuristics ----------
+# Strong sentence terminator
+_STRONG_END = re.compile(r'[\.!\?…;:]$')
+# Heading heuristic (short, many uppercase)
+_HEADING_HEURISTIC = re.compile(r'^[A-Z0-9 \-\/]{1,80}$')
+# Standalone page/line number
+_STANDALONE_NUMBER = re.compile(r'^\d+\s*$')
+# List start markers
+_LIST_START = re.compile(r'^[\u2022\-\*\•\●]\s+|^\d+[\.\)]\s+')
+
+# Combined connector set (lowercase)
+_CONNECTORS = _IND_CONT.union(_EN_CONT)
 
 
 def canonicalize_text(s: str, lower: bool = False) -> str:
@@ -318,6 +332,154 @@ def extract_list_blocks(text: str) -> List[Dict[str, str]]:
 
     return blocks
 
+
+# ---------- Helper tests ----------
+def _is_heading_like(line: str) -> bool:
+    l = line.strip()
+    if not l:
+        return False
+    if _HEADING_HEURISTIC.match(l):
+        # require a reasonable fraction uppercase to be considered heading
+        upper_frac = sum(1 for c in l if c.isupper()) / max(1, len(l))
+        return upper_frac > 0.4
+    return False
+
+def _first_token_lower_or_connector(line: str) -> bool:
+    ln = line.strip()
+    if not ln:
+        return False
+    # first char lowercase is strong signal
+    if ln[0].islower():
+        return True
+    # starts with punctuation commonly used mid-sentence
+    if ln[0] in {',','('}:
+        return True
+    # first token connector
+    first = re.split(r'\s+', ln)[0].strip(",(").lower()
+    if first in _CONNECTORS:
+        return True
+    return False
+
+# ---------- Main merge function with hyphenation ----------
+def merge_across_page_breaks(
+    pages: List[str],
+    max_join_lines: int = 2
+) -> List[str]:
+    """
+    Merge page narratives where a sentence is likely split across a page break.
+    - pages: list of page narrative strings in order
+    - max_join_lines: how many lines to borrow from next page when joining (default 2)
+    Returns a new list of page narratives (same length) where some next-page lines
+    have been stolen and appended to previous page when safe.
+    """
+    merged = []
+    i = 0
+    n = len(pages)
+    # operate on a mutable copy to allow removing borrowed lines from next page
+    pages_copy = list(pages)
+
+    while i < n:
+        cur = pages_copy[i] or ""
+        # prepare last non-empty line check
+        cur_lines = [ln for ln in cur.splitlines()]
+        last_nonempty = ""
+        for ln in reversed(cur_lines):
+            if ln.strip():
+                last_nonempty = ln.rstrip()
+                break
+
+        will_join = False
+        force_hyphen_join = False
+        # If last non-empty line ends with hyphen -> force join (high confidence)
+        if last_nonempty.endswith('-'):
+            force_hyphen_join = True
+            will_join = True
+        else:
+            # If last line doesn't end with strong punctuation and is not heading/list/number -> candidate
+            if last_nonempty and not _STRONG_END.search(last_nonempty) and not _is_heading_like(last_nonempty) \
+               and not _STANDALONE_NUMBER.match(last_nonempty) and not _LIST_START.match(last_nonempty):
+                will_join = True
+
+        if i+1 < n and will_join:
+            nxt = pages_copy[i+1] or ""
+            nxt_lines = [ln for ln in nxt.splitlines()]
+            # find first non-empty line on next page
+            first_nonempty = ""
+            first_idx = None
+            for idx, ln in enumerate(nxt_lines):
+                if ln.strip():
+                    first_nonempty = ln.strip()
+                    first_idx = idx
+                    break
+
+            # if no content on next page -> nothing to join
+            if not first_nonempty:
+                merged.append(cur)
+                i += 1
+                continue
+
+            # do not join if next line is heading/list/standalone number
+            if _is_heading_like(first_nonempty) or _LIST_START.match(first_nonempty) or _STANDALONE_NUMBER.match(first_nonempty):
+                merged.append(cur)
+                i += 1
+                continue
+
+            # Hyphenation case handling (force join): remove trailing hyphen and concatenate properly
+            if force_hyphen_join:
+                # remove trailing hyphen from last_nonempty
+                # if next starts with lowercase, just concatenate; else add a space between
+                first_part = first_nonempty
+                # remove trailing '-' from cur
+                # replace only the last occurrence
+                cur = cur.rstrip()
+                # drop trailing hyphen
+                cur = cur[:-1]
+                # decide whether to insert a space
+                if first_part and first_part[0].isupper():
+                    # if next part starts uppercase, add a space
+                    cur = cur + " " + first_part
+                else:
+                    # lowercase likely continuation inside word, no extra space
+                    cur = cur + first_part
+                # remove the borrowed line(s) from next page
+                remaining = nxt_lines[first_idx+1:] if first_idx is not None else nxt_lines
+                pages_copy[i+1] = "\n".join(remaining).lstrip()
+                merged.append(cur)
+                i += 1
+                continue
+
+            # otherwise, continuation heuristics: check first token lowercase or connector
+            if _first_token_lower_or_connector(first_nonempty):
+                # collect up to max_join_lines from next page (but stop at headings/list markers)
+                borrowed = []
+                taken = 0
+                for ln in nxt_lines[first_idx:]:
+                    if ln.strip() == "":
+                        break
+                    # stop if the line looks like a heading or a list start (conservative)
+                    if _is_heading_like(ln.strip()) or _LIST_START.match(ln.strip()):
+                        break
+                    borrowed.append(ln.strip())
+                    taken += 1
+                    if taken >= max_join_lines:
+                        break
+
+                if borrowed:
+                    appended = " ".join(borrowed)
+                    cur = cur.rstrip() + " " + appended
+                    # remove borrowed lines from next page
+                    remaining = nxt_lines[first_idx + taken:]
+                    pages_copy[i+1] = "\n".join(remaining).lstrip()
+                    merged.append(cur)
+                    i += 1
+                    continue
+
+        # default: no join
+        merged.append(cur)
+        i += 1
+
+    return merged
+
 def pages_to_chunks(
     pdf_pages: List[Dict[str, Any]],
     source: str,
@@ -332,11 +494,33 @@ def pages_to_chunks(
      - Extracts list blocks and indexes them as item-level chunks
      - Removes list blocks from narrative before semantic chunking
     NOTE: This function does not persist or embed — it only returns canonical chunks.
+   
+    Upgraded: extracts list blocks -> item-level chunks; removes list blocks from narrative before semantic chunking. 
     """
 
     all_chunks: List[Dict[str, Any]] = []
     # table_index is local to each page (keeps original table_index); we'll also create unique table_id using source/page/table_index
-    for page in pdf_pages:
+     
+    # --- 0) Ensure pages are sorted by page number (important) ---
+    pdf_pages_sorted = sorted(pdf_pages, key=lambda p: int(p.get("page", 0)))
+    
+# --- 1) Build list of narrative strings in order ---
+    narrative_texts = [p.get("narrative_text") or "" for p in pdf_pages_sorted]
+     # --- 2) Merge across page breaks (hyphenation-aware) ---
+    merged_texts = merge_across_page_breaks(narrative_texts, max_join_lines=2)
+
+    # Safety: ensure merged_texts length matches pages; if not, pad/truncate conservatively
+    if len(merged_texts) < len(pdf_pages_sorted):
+        merged_texts += [""] * (len(pdf_pages_sorted) - len(merged_texts))
+    elif len(merged_texts) > len(pdf_pages_sorted):
+        merged_texts = merged_texts[: len(pdf_pages_sorted)]
+    
+    # merged_texts is a list of strings aligned with narrative_texts (same length)
+    # write them back into page dicts (preserve other keys)
+    for idx, page_dict in enumerate(pdf_pages_sorted):
+        page_dict["narrative_text"] = merged_texts[idx]
+
+    for page in pdf_pages_sorted:
         page_num = page.get("page")
         # 1) Narrative text -> chunked
         narrative = page.get("narrative_text") or ""
