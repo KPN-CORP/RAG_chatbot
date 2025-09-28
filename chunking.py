@@ -19,7 +19,7 @@ _STANDALONE_NUMBER = re.compile(r'^\d+\s*$')
 _LIST_START = re.compile(r'^[\u2022\-\*\•\●]\s+|^\d+[\.\)]\s+')
 
 # Combined connector set (lowercase)
-_CONNECTORS = _IND_CONT.union(_EN_CONT)
+_CONNECTORS = _IND_CONT+ _EN_CONT
 
 
 def canonicalize_text(s: str, lower: bool = False) -> str:

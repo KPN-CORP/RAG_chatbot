@@ -33,6 +33,7 @@ indo_continuations = [
     # Konjungsi korelatif
     "baik", "bukan hanya", "tidak hanya", "melainkan juga", "tetapi juga"
 ]
+
 continuation_words = [
     # --- English Continuations ---
     # Coordinating Conjunctions
@@ -82,10 +83,10 @@ continuation_words = [
     # Konjungsi korelatif
     "baik", "bukan hanya", "tidak hanya", "melainkan juga", "tetapi juga"
 ]
-english_continuation = {
+english_continuation = [
     "and","or","but","nor","yet","so","for",
     "because","since","although","though","if","unless","until","while","whereas","when","whenever","after","before","once",
     "of","to","in","on","at","by","with","from","into","onto","through","across","about","over","under","between","among","against","during","without","within",
     "however","therefore","thus","then","moreover","furthermore","consequently","meanwhile","subsequently","instead","otherwise",
     "that","which","who","whom","whose","where","when","how","why"
-}
+]
