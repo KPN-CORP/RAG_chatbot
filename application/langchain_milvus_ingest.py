@@ -8,7 +8,7 @@ Final audited ingest script - LangChain (Gemini) for embeddings, pymilvus for co
 """
 
 from typing import List, Dict, Any, Tuple, Optional, Set
-import os, logging, time
+import os, logging
 
 # Embeddings (LangChain wrapper for Gemini)
 try:
@@ -72,6 +72,7 @@ def ensure_collection_exists_with_schema(collection_name: str, dim: int,
         FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=128),
         FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim),
         FieldSchema(name="checksum", dtype=DataType.VARCHAR, max_length=128),
+        FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
         FieldSchema(name="metadata", dtype=DataType.JSON)
     ]
     schema = CollectionSchema(fields, description="RAG KB - chunks with Gemini embeddings")
@@ -109,14 +110,16 @@ def milvus_query_checksums(collection_name: str, checksums: List[str], host: str
         return set()
 
 
-def insert_with_pymilvus(coll: Optional[Collection], ids: List[str], vectors: List[List[float]], checksums: List[str], metadatas: List[Dict[str, Any]], dry_run: bool = False):
+def insert_with_pymilvus(coll: Optional[Collection], ids: List[str], vectors: List[List[float]],
+                         checksums: List[str], texts: List[str], metadatas: List[Dict[str, Any]],
+                         dry_run: bool = False):
     """Insert vectors (aligned lists) into Milvus; if dry_run True, only log."""
     if dry_run:
         log.info("[dry_run] Would insert %d vectors into collection", len(ids))
         return
     if coll is None:
         raise RuntimeError("pymilvus Collection object required for insertion")
-    coll.insert([ids, vectors, checksums, metadatas])
+    coll.insert([ids, vectors, checksums, texts, metadatas])
     coll.flush()
     coll.load()
 
@@ -210,13 +213,21 @@ def store_chunks_to_milvus(
     inserted = 0
     coll_obj: Optional[Collection] = None
 
+    # batch loop
     i = 0
     while i < len(to_process):
         batch = to_process[i:i+insert_batch_size]
         ids = [r[0] for r in batch]
         texts = [r[1] for r in batch]
         checksums = [r[2] for r in batch]
-        metadatas = [r[3] for r in batch]
+        # Build metadata WITHOUT the large chunk_text to avoid duplication
+        metadatas = []
+        for r in batch:
+            md = r[3].copy()
+            # remove the full text if present
+            md.pop("chunk_text", None)
+            md.pop("text", None)
+            metadatas.append(md)
 
         # embed
         vectors = embed_batch_texts(texts, model=embedding_model, batch_size=embed_batch_size, api_key=api_key, dry_run=dry_run)
@@ -229,7 +240,7 @@ def store_chunks_to_milvus(
             coll_obj = ensure_collection_exists_with_schema(collection_name, dim, host=milvus_host, port=str(milvus_port), dry_run=dry_run)
 
         # insert
-        insert_with_pymilvus(coll_obj, ids, vectors, checksums, metadatas, dry_run=dry_run)
+        insert_with_pymilvus(coll_obj, ids, vectors, checksums, texts, metadatas, dry_run=dry_run)
         inserted += len(ids)
         i += insert_batch_size
 

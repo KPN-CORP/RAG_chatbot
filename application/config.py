@@ -1,7 +1,7 @@
 # SAVE AS .env LATER
-HOST = "127.0.0.1"
-PORT = "19530"
-COL = "company_policies"
+milvus_host = "127.0.0.1"
+milvus_port = "19530"
+collection_name = "company_policies" # collection name in Milvus
 
 
 REDIS_URL = "redis://localhost:6379/0"
