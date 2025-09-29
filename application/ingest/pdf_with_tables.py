@@ -1,7 +1,7 @@
 import pdfplumber
 from fuzzywuzzy import fuzz, process
-from typing import List, Dict, Tuple, Any, Iterable
-from collections import Counter
+from typing import List, Tuple, Any, Iterable
+# from collections import Counter
 import re
 
 def bbox_intersects(a, b):

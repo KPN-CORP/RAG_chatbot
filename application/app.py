@@ -8,9 +8,11 @@ from pydantic import BaseModel
 import redis
 
 from modules.redis import RedisConversationMemory
-from modules.retriever_wrappper import SanitizingRetriever
+# from modules.retriever_wrappper import SanitizingRetriever
+from modules.history_utils import build_chat_history_messages
+
 from config import REDIS_URL, SESSION_TTL_SECONDS, MAX_HISTORY_MESSAGES, gemini_chat_model, API_KEY
-from modules.milvus_vectorstore import get_vectorstore
+from vectorstore.milvus_vectorstore import get_vectorstore
 
 # LangChain imports (use provider wrapper)
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -72,7 +74,8 @@ def chat(req: ChatReq):
     retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})
 
     # Wrap retriever to sanitize Documents
-    sanitized_retriever = SanitizingRetriever(retriever)
+    # sanitized_retriever = SanitizingRetriever(retriever)
+    sanitized_retriever = retriever
 
     # Build LLM (use env var safely)
     api_key_value = os.environ.get(API_KEY)  # API_KEY in config should be the env var name string

@@ -6,7 +6,7 @@ import re
 import uuid
 import time
 from typing import List, Dict, Any
-from continuation_words import indo_continuations as _IND_CONT, english_continuation as _EN_CONT
+from modules.continuation_words import indo_continuations as _IND_CONT, english_continuation as _EN_CONT
 
 # ---------- Config / heuristics ----------
 # Strong sentence terminator
