@@ -154,7 +154,7 @@ def store_chunks_to_milvus(
     collection_name: str,
     milvus_host: str = "127.0.0.1",
     milvus_port: int = 19530,
-    embedding_model: str = "models/embedding-001",
+    embedding_model: str = "models/embedding-004",
     embed_batch_size: int = 32,
     insert_batch_size: int = 64,
     dedupe_with_milvus: bool = True,

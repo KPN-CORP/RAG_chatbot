@@ -11,21 +11,17 @@ from modules.redis import RedisConversationMemory
 # from modules.retriever_wrappper import SanitizingRetriever
 from modules.history_utils import build_chat_history_messages
 
-from config import REDIS_URL, SESSION_TTL_SECONDS, MAX_HISTORY_MESSAGES, gemini_chat_model, API_KEY
+from config import (REDIS_URL, SESSION_TTL_SECONDS, MAX_HISTORY_MESSAGES, 
+                    gemini_chat_model, api_key_name, system_prompt
+)
 from vectorstore.milvus_vectorstore import get_vectorstore
+
+import logging
 
 # LangChain imports (use provider wrapper)
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import ConversationalRetrievalChain
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-
-
-system_prompt = """Nama kamu adalah Nastari. Kamu adalah assistant di bidang AI di perusahaan KPN-Corp yang berada di Kuningan, Jakarta.
-    Bersikaplah seperti HR profesional yang membantu karyawan dengan pertanyaan terkait kebijakan perusahaan dan masalah karyawan.
-    Jika kamu tidak mengetahui jawabannya, katakan "Maaf, saya tidak tahu." Jangan membuat-buat jawaban, namun kamu bisa menanyakan lebih detail dan tawarkan untuk menghubungi tim HRD asli atau arahkan user untuk membaca dokumen yang relevan dari sumber yang diberikan jika ada.
-    Berikan sumber dokumen yang relevan jika kamu memberikan jawaban berdasarkan dokumen.
-    """
-
 
 # ----- CONFIG -----
 r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
@@ -63,74 +59,66 @@ def create_session():
 
 @app.post("/chat", response_model=ChatResp)
 def chat(req: ChatReq):
+    # 1) Preconditions
     if not vectorstore:
         raise HTTPException(status_code=500, detail="Vectorstore not wired in server.")
-
-    # Optional: validate session exists
     if not session_exists(req.session_id):
         raise HTTPException(status_code=404, detail="Session not found. Create a session first.")
 
-    # Build retriever from vectorstore
-    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})
+    # 2) Create session-scoped memory helper (Redis)
+    mem = RedisConversationMemory(session_id=req.session_id, max_messages=MAX_HISTORY_MESSAGES)
 
-    # Wrap retriever to sanitize Documents
+    # 3) Build retriever from vectorstore (and optionally wrap with a sanitizer)
+    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})
+    # If you have a safe SanitizingRetriever (no LLM calls inside), use it; otherwise keep the plain retriever:
     # sanitized_retriever = SanitizingRetriever(retriever)
     sanitized_retriever = retriever
 
-    # Build LLM (use env var safely)
-    api_key_value = os.environ.get(API_KEY)  # API_KEY in config should be the env var name string
+    # 4) Build the LLM client (safe fetch of API key)
+    api_key_value = os.environ.get(api_key_name)  # ensure `api_key_name` is the env var name string from config
     llm = ChatGoogleGenerativeAI(model=gemini_chat_model, google_api_key=api_key_value)
 
-    # Create Redis-backed memory helper for this session
-    mem = RedisConversationMemory(session_id=req.session_id, max_messages=MAX_HISTORY_MESSAGES)
-
-    # debug
-    # docs = retriever.get_relevant_documents(req.question)
-    # for i, d in enumerate(docs, 1):
-    #     print(f"Doc {i} — page_content type:", type(d.page_content))
-    #     # if it's a dict, print its keys or a short preview
-    #     if not isinstance(d.page_content, str):
-    #         import json
-    #         print("page_content (as JSON):", json.dumps(d.page_content)[:500])
-    #     print("metadata keys:", d.metadata.keys())
-    #     print("----")
-    # end debug
-
-    # Build prompt with system + history + human
-    # Important: include a placeholder for the retrieved docs variable: {context}
+    # 5) Build the prompt — USE a plain string {history} placeholder (avoid MessagesPlaceholder)
     qa_prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
-        MessagesPlaceholder("chat_history"),            # inject conversation history here
+        MessagesPlaceholder(variable_name="chat_history"),            # inject conversation history here
         ("system", "Use the following extracted documents to answer the user's question:\n\n{context}"),
         ("human", "{question}")
     ])
 
-    # Create conv chain WITHOUT ConversationBufferMemory
+    # 6) Build the ConversationalRetrievalChain (memory=None is fine since we handle history manually)
     conv_chain = ConversationalRetrievalChain.from_llm(
         llm=llm,
         retriever=sanitized_retriever,
         memory=None,
         return_source_documents=True,
-        combine_docs_chain_kwargs={"prompt": qa_prompt},  # 👈 inject your system prompt
+        combine_docs_chain_kwargs={"prompt": qa_prompt},
     )
 
+    # 7) Load raw history from Redis and normalize to BaseMessage list (helper)
+    raw_history = mem.get_chat_history_pairs()  # whatever your Redis class returns
+    chat_history_messages = build_chat_history_messages(raw_history, req.question)  # returns List[BaseMessage]
 
-    # Build chat_history pairs (from Redis) and call chain
-    chat_history_pairs = mem.get_chat_history_pairs()  # [(user, assistant), ...]
+    # Debug print to inspect normalized messages (types and content preview)
+    print("chat_history_messages in app.py:", chat_history_messages)
+
+    # 8) Invoke the chain; pass 'history' (string) and let the chain fetch context from retriever
     try:
         # deprecated
         # result = conv_chain({"question": req.question, "chat_history": chat_history_pairs})
         
         # synchronous call
-        result = conv_chain.invoke({"question": req.question, "chat_history": chat_history_pairs})
+        result = conv_chain.invoke({"question": req.question, "chat_history": chat_history_messages})
         # asynchronous call
         # result = await conv_chain.ainvoke({"question": req.question, "chat_history": chat_history_pairs})
 
-
     except Exception as e:
+        # print full exception with context for easier debugging in logs
+        logging.exception("Error invoking chain. Raw history repr: %s", repr(raw_history))
         # Log/raise more helpful error in production
         raise HTTPException(status_code=500, detail=f"LLM/chain error: {e}")
 
+    # 9) Debug print retrieved docs and extract answer + sources
     print_retrieved_docs(result)
 
     # Pull assistant answer and source documents
@@ -138,11 +126,11 @@ def chat(req: ChatReq):
     source_docs = result.get("source_documents", []) or []
     sources_meta = [d.metadata for d in source_docs]
 
-    # Save the turn into Redis after successful call: user then assistant
+    # 10) Save the turn into Redis after successful call: user then assistant
     mem.add_user_message(req.question)
     mem.add_assistant_message(assistant_text, sources=sources_meta)
 
-    # Ensure return types match Pydantic model
+    # 11) Ensure return types match Pydantic model
     return {"answer": assistant_text, "sources": sources_meta}
 
 
