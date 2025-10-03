@@ -2,17 +2,17 @@
 import os
 import uuid
 
-from typing import List
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 import redis
 
 from modules.redis import RedisConversationMemory
 # from modules.retriever_wrappper import SanitizingRetriever
 from modules.history_utils import build_chat_history_messages
+from schemas.api import CreateSessionResp, ChatReq, ChatResp
+from schemas.rag_outputs import AnswerWithSources, format_docs_with_metadata
 
 from config import (REDIS_URL, SESSION_TTL_SECONDS, MAX_HISTORY_MESSAGES, 
-                    gemini_chat_model, api_key_name, system_prompt
+                    gemini_chat_model, api_key_name, qa_system_prompt
 )
 from vectorstore.milvus_vectorstore import get_vectorstore
 
@@ -23,24 +23,16 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import ConversationalRetrievalChain
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 
+from langchain.output_parsers import PydanticOutputParser
+
 # ----- CONFIG -----
 r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 app = FastAPI()
+pydantic_parser = PydanticOutputParser(pydantic_object=AnswerWithSources)
 
 # Your already-created vectorstore (LangChain Milvus wrapper)
 vectorstore = get_vectorstore()
 
-# ----- Pydantic models -----
-class CreateSessionResp(BaseModel):
-    session_id: str
-
-class ChatReq(BaseModel):
-    session_id: str
-    question: str
-
-class ChatResp(BaseModel):
-    answer: str
-    sources: List[dict]
 
 # ----- Helpers (optional) -----
 def _session_meta_key(sid: str) -> str:
@@ -80,19 +72,28 @@ def chat(req: ChatReq):
 
     # 5) Build the prompt — USE a plain string {history} placeholder (avoid MessagesPlaceholder)
     qa_prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
+        ("system", qa_system_prompt),
         MessagesPlaceholder(variable_name="chat_history"),            # inject conversation history here
-        ("system", "Use the following extracted documents to answer the user's question:\n\n{context}"),
+        # ("system", "Use the following extracted documents to answer the user's question:\n\n{context}"),
         ("human", "{question}")
     ])
 
-    # 6) Build the ConversationalRetrievalChain (memory=None is fine since we handle history manually)
-    conv_chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=sanitized_retriever,
-        memory=None,
-        return_source_documents=True,
-        combine_docs_chain_kwargs={"prompt": qa_prompt},
+    # 6) Build the RAG chain (components + flow)
+    rag_chain = (
+        {
+            # The retriever runs first, using the original question.
+            # Its output is passed to format_docs and becomes the 'context'.
+            "context": (lambda x: x["question"]) | retriever | format_docs_with_metadata,
+            
+            # The original 'question' is passed through unchanged.
+            "question": (lambda x: x["question"]),
+            
+            # The 'chat_history' is passed through unchanged.
+            "chat_history": (lambda x: x["chat_history"])
+        }
+        | qa_prompt
+        | llm
+        | pydantic_parser
     )
 
     # 7) Load raw history from Redis and normalize to BaseMessage list (helper)
@@ -100,17 +101,15 @@ def chat(req: ChatReq):
     chat_history_messages = build_chat_history_messages(raw_history, req.question)  # returns List[BaseMessage]
 
     # Debug print to inspect normalized messages (types and content preview)
-    print("chat_history_messages in app.py:", chat_history_messages)
+    # print("chat_history_messages in app.py:", chat_history_messages)
 
     # 8) Invoke the chain; pass 'history' (string) and let the chain fetch context from retriever
     try:
-        # deprecated
-        # result = conv_chain({"question": req.question, "chat_history": chat_history_pairs})
-        
-        # synchronous call
-        result = conv_chain.invoke({"question": req.question, "chat_history": chat_history_messages})
-        # asynchronous call
-        # result = await conv_chain.ainvoke({"question": req.question, "chat_history": chat_history_pairs})
+        # The invoke call now passes a single dictionary with all the required keys
+        result = rag_chain.invoke({
+            "question": req.question, 
+            "chat_history": chat_history_messages
+        })
 
     except Exception as e:
         # print full exception with context for easier debugging in logs
@@ -119,12 +118,11 @@ def chat(req: ChatReq):
         raise HTTPException(status_code=500, detail=f"LLM/chain error: {e}")
 
     # 9) Debug print retrieved docs and extract answer + sources
-    print_retrieved_docs(result)
+    # print_retrieved_docs(result)
 
     # Pull assistant answer and source documents
-    assistant_text = result.get("answer") or result.get("result") or ""
-    source_docs = result.get("source_documents", []) or []
-    sources_meta = [d.metadata for d in source_docs]
+    assistant_text = result.answer or result.result or ""
+    sources_meta = result.sources or []
 
     # 10) Save the turn into Redis after successful call: user then assistant
     mem.add_user_message(req.question)

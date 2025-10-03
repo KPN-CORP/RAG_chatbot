@@ -14,22 +14,13 @@ def build_chat_history_messages(raw) -> List[BaseMessage]:
       - Already a list of BaseMessage (returned unchanged)
       - If a string is passed, try to JSON-decode to list; otherwise ignore and warn
     """
-
-    print("Raw chat history input:", repr(raw))
-
     msgs = []
-    empty_template_history = [
-            HumanMessage(content=""),
-            AIMessage(content="")
-        ]
     if not raw:
         # no history
-        print('"raw is None" case')
-        return empty_template_history
+        return msgs
 
     # If already list of BaseMessage, return as-is (safety check)
     if isinstance(raw, list) and all(isinstance(x, BaseMessage) for x in raw):
-        print("isintance case")
         return raw
 
     # If raw is a JSON string representing history, try to parse it
@@ -39,7 +30,7 @@ def build_chat_history_messages(raw) -> List[BaseMessage]:
             raw = parsed
         except Exception:
             logging.warning("chat_history is a plain string and not valid JSON. Ignoring.")
-            return empty_template_history
+            return []
 
     # Now raw should be a list (hopefully)
     if isinstance(raw, list):
@@ -108,6 +99,5 @@ def build_chat_history_messages(raw) -> List[BaseMessage]:
         content = getattr(m, "content", None)
         logging.debug("  [%d] %s — content preview: %s", i, type(m).__name__, repr(content)[:200])
 
-    print("Final chat_history_messages to be passed to chain:", chat_history_messages)
     return chat_history_messages
 
