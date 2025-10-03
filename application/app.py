@@ -64,7 +64,6 @@ def chat(req: ChatReq):
     retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})
     # If you have a safe SanitizingRetriever (no LLM calls inside), use it; otherwise keep the plain retriever:
     # sanitized_retriever = SanitizingRetriever(retriever)
-    sanitized_retriever = retriever
 
     # 4) Build the LLM client (safe fetch of API key)
     api_key_value = os.environ.get(api_key_name)  # ensure `api_key_name` is the env var name string from config
