@@ -1,5 +1,7 @@
 name: kpn-ai
 channels:
+  - conda-forge
+  - anaconda
   - defaults
 dependencies:
   - argon2-cffi=21.3.0=pyhd3eb1b0_0
