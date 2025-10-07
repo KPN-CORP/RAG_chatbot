@@ -1,4 +1,5 @@
-# modules/retriever_wrappper.py
+"""Wrapper that sanitises retrieval results before feeding them into the LLM."""
+
 import json
 from typing import List, Any
 try:
@@ -9,7 +10,10 @@ except Exception:
 
 from pydantic import PrivateAttr
 
+
 def sanitize_docs(docs: List[Document]) -> List[Document]:
+    """Coerce document page content to plain strings for downstream consumers."""
+
     sanitized: List[Document] = []
     for d in docs:
         pc = d.page_content
@@ -35,6 +39,8 @@ def sanitize_docs(docs: List[Document]) -> List[Document]:
     return sanitized
 
 class SanitizingRetriever(BaseRetriever):
+    """LangChain retriever wrapper that ensures string page content."""
+
     _base_retriever: Any = PrivateAttr()
 
     # attributes we will NOT forward to the underlying retriever to avoid recursion/special-handling
@@ -46,14 +52,20 @@ class SanitizingRetriever(BaseRetriever):
     }
 
     def __init__(self, base_retriever: Any, **kwargs):
+        """Store the wrapped retriever while preserving Pydantic compatibility."""
+
         super().__init__(**kwargs)
         self._base_retriever = base_retriever
 
     def get_relevant_documents(self, query: str, **kwargs) -> List[Document]:
+        """Retrieve documents synchronously and normalise their contents."""
+
         docs = self._base_retriever.get_relevant_documents(query, **kwargs)
         return sanitize_docs(docs)
 
     async def aget_relevant_documents(self, query: str, **kwargs) -> List[Document]:
+        """Retrieve documents asynchronously when supported and normalise contents."""
+
         if hasattr(self._base_retriever, "aget_relevant_documents"):
             docs = await self._base_retriever.aget_relevant_documents(query, **kwargs)
         else:
@@ -61,6 +73,8 @@ class SanitizingRetriever(BaseRetriever):
         return sanitize_docs(docs)
 
     def __getattr__(self, name: str):
+        """Forward unknown attributes to the wrapped retriever while avoiding recursion."""
+
         # block forwarding of internal/pydantic/serialization attributes to avoid recursion
         if name in self._DO_NOT_FORWARD or name.startswith("_") or name.endswith("_json"):
             raise AttributeError(name)
