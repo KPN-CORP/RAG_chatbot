@@ -1,4 +1,5 @@
 """Wrapper that sanitises retrieval results before feeding them into the LLM."""
+# not used
 
 import json
 from typing import List, Any

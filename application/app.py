@@ -7,7 +7,6 @@ import redis
 
 from logging_config import configure_logging, get_logger
 from modules.redis import RedisConversationMemory
-# from modules.retriever_wrappper import SanitizingRetriever
 from modules.history_utils import build_chat_history_messages
 from schemas.api import CreateSessionResp, ChatReq, ChatResp
 from schemas.rag_outputs import AnswerWithSources, format_docs_with_metadata
