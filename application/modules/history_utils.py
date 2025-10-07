@@ -1,19 +1,23 @@
-from langchain.schema import HumanMessage, AIMessage, SystemMessage, BaseMessage
-from typing import List
+"""Utilities for normalising chat history structures before LLM calls."""
+
 import json
-import logging
+from typing import Iterable, List, Sequence
 
-# ... inside chat() endpoint:
+from langchain.schema import HumanMessage, AIMessage, SystemMessage, BaseMessage
 
-def build_chat_history_messages(raw) -> List[BaseMessage]:
-    """
-    Normalize various history formats into List[BaseMessage].
-    Supported input:
-      - List of (user_text, assistant_text) tuples/lists
-      - List of dicts like {"role":"user","content":"..."} or {"role":"assistant","content":"..."}
-      - Already a list of BaseMessage (returned unchanged)
-      - If a string is passed, try to JSON-decode to list; otherwise ignore and warn
-    """
+from logging_config import get_logger
+
+logger = get_logger(__name__)
+
+
+def build_chat_history_messages(raw: Iterable | Sequence | str | None) -> List[BaseMessage]:
+    """Normalise various history encodings into a list of LangChain messages."""
+
+    # Supported input:
+    #   - List of (user_text, assistant_text) tuples/lists
+    #   - List of dicts like {"role":"user","content":"..."}
+    #   - Already a list of BaseMessage (returned unchanged)
+    #   - If a string is passed, try to JSON-decode to list; otherwise ignore and warn
     msgs = []
     if not raw:
         # no history
@@ -29,7 +33,7 @@ def build_chat_history_messages(raw) -> List[BaseMessage]:
             parsed = json.loads(raw)
             raw = parsed
         except Exception:
-            logging.warning("chat_history is a plain string and not valid JSON. Ignoring.")
+            logger.warning("chat_history is a plain string and not valid JSON. Ignoring.")
             return []
 
     # Now raw should be a list (hopefully)
@@ -71,14 +75,14 @@ def build_chat_history_messages(raw) -> List[BaseMessage]:
                 continue
 
             # unknown type: log and skip
-            logging.warning("Unknown chat_history item type: %s — skipping", type(item))
+            logger.warning("Unknown chat_history item type: %s — skipping", type(item))
     else:
-        logging.warning("chat_history is not a list; type=%s", type(raw))
+        logger.warning("chat_history is not a list; type=%s", type(raw))
 
     # Defensive normalization & debug logging — ensure it's a list of BaseMessage
     chat_history_messages = msgs
     if not isinstance(chat_history_messages, list):
-        logging.warning("chat_history_messages is not a list (type=%s). Forcing to list.", type(chat_history_messages))
+        logger.warning("chat_history_messages is not a list (type=%s). Forcing to list.", type(chat_history_messages))
         chat_history_messages = [HumanMessage(content=str(chat_history_messages))]
     
     # Ensure every item is a BaseMessage — if not, coerce to HumanMessage
@@ -87,17 +91,17 @@ def build_chat_history_messages(raw) -> List[BaseMessage]:
         if isinstance(item, BaseMessage):
             fixed_msgs.append(item)
         else:
-            logging.warning("chat_history item %s is not BaseMessage (type=%s). Converting to HumanMessage.", i, type(item))
+            logger.warning("chat_history item %s is not BaseMessage (type=%s). Converting to HumanMessage.", i, type(item))
             fixed_msgs.append(HumanMessage(content=str(item)))
 
     chat_history_messages = fixed_msgs
 
     # Debug print: types and short content preview
-    logging.debug("Passing chat_history_messages to conv_chain (len=%d)", len(chat_history_messages))
+    logger.debug("Passing chat_history_messages to conv_chain (len=%d)", len(chat_history_messages))
     for i, m in enumerate(chat_history_messages):
         # content may not exist on some custom objects, use getattr safely
         content = getattr(m, "content", None)
-        logging.debug("  [%d] %s — content preview: %s", i, type(m).__name__, repr(content)[:200])
+        logger.debug("  [%d] %s — content preview: %s", i, type(m).__name__, repr(content)[:200])
 
     return chat_history_messages
 

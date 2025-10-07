@@ -1,28 +1,31 @@
-# app.py
+"""FastAPI application entry point exposing chat and session endpoints."""
 import os
 import uuid
 
 from fastapi import FastAPI, HTTPException
 import redis
 
+from logging_config import configure_logging, get_logger
 from modules.redis import RedisConversationMemory
 # from modules.retriever_wrappper import SanitizingRetriever
 from modules.history_utils import build_chat_history_messages
 from schemas.api import CreateSessionResp, ChatReq, ChatResp
 from schemas.rag_outputs import AnswerWithSources, format_docs_with_metadata
 
-from config import (REDIS_URL, SESSION_TTL_SECONDS, MAX_HISTORY_MESSAGES, 
+from config import (REDIS_URL, SESSION_TTL_SECONDS, MAX_HISTORY_MESSAGES,
                     gemini_chat_model, google_api_key_name, qa_system_prompt
 )
 from vectorstore.milvus_vectorstore import get_vectorstore
-
-import logging
 
 # LangChain imports (use provider wrapper)
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from langchain.output_parsers import PydanticOutputParser
+
+# Configure logging once when the module is imported.
+configure_logging()
+logger = get_logger(__name__)
 
 # ----- CONFIG -----
 r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
@@ -35,25 +38,39 @@ vectorstore = get_vectorstore()
 
 # ----- Helpers (optional) -----
 def _session_meta_key(sid: str) -> str:
+    """Return the Redis metadata key for the given session identifier."""
+
     return f"session:{sid}:meta"
 
+
 def session_exists(sid: str) -> bool:
+    """Check whether a chat session already exists in Redis."""
+
     return r.exists(_session_meta_key(sid)) == 1
 
 # ----- Endpoints -----
 @app.post("/session", response_model=CreateSessionResp)
 def create_session():
+    """Create a new chat session backed by Redis."""
+
     sid = str(uuid.uuid4())
     r.hset(_session_meta_key(sid), mapping={"created_at": str(__import__("time").time())})
     r.expire(_session_meta_key(sid), SESSION_TTL_SECONDS)
+    logger.info("Created new chat session", extra={"session_id": sid})
     return {"session_id": sid}
 
 @app.post("/chat", response_model=ChatResp)
 def chat(req: ChatReq):
+    """Answer a user question using the retrieval augmented generation chain."""
+
+    logger.info("Received chat request", extra={"session_id": req.session_id})
+
     # 1) Preconditions
     if not vectorstore:
+        logger.error("Vectorstore is not initialised")
         raise HTTPException(status_code=500, detail="Vectorstore not wired in server.")
     if not session_exists(req.session_id):
+        logger.warning("Chat request for unknown session", extra={"session_id": req.session_id})
         raise HTTPException(status_code=404, detail="Session not found. Create a session first.")
 
     # 2) Create session-scoped memory helper (Redis)
@@ -66,6 +83,11 @@ def chat(req: ChatReq):
 
     # 4) Build the LLM client (safe fetch of API key)
     api_key_value = os.environ.get(google_api_key_name)  # ensure `google_api_key_name` is the env var name string from config
+    if not api_key_value:
+        logger.error(
+            "Missing Google API key in environment", extra={"env_var": google_api_key_name}
+        )
+        raise HTTPException(status_code=500, detail="LLM API key not configured.")
     llm = ChatGoogleGenerativeAI(model=gemini_chat_model, google_api_key=api_key_value)
 
     # 5) Build the prompt — USE a plain string {history} placeholder (avoid MessagesPlaceholder)
@@ -111,7 +133,9 @@ def chat(req: ChatReq):
 
     except Exception as e:
         # print full exception with context for easier debugging in logs
-        logging.exception("Error invoking chain. Raw history repr: %s", repr(raw_history))
+        logger.exception(
+            "Error invoking chain", extra={"session_id": req.session_id, "history": raw_history}
+        )
         # Log/raise more helpful error in production
         raise HTTPException(status_code=500, detail=f"LLM/chain error: {e}")
 
@@ -125,13 +149,22 @@ def chat(req: ChatReq):
     # 10) Save the turn into Redis after successful call: user then assistant
     mem.add_user_message(req.question)
     mem.add_assistant_message(assistant_text, sources=sources_meta)
+    logger.info(
+        "Chat response generated",
+        extra={
+            "session_id": req.session_id,
+            "has_sources": bool(sources_meta),
+            "answer_preview": assistant_text[:100],
+        },
+    )
 
     # 11) Ensure return types match Pydantic model
     return {"answer": assistant_text, "sources": sources_meta}
 
 
-def print_retrieved_docs(result: dict):
-    # Retrieved docs
+def print_retrieved_docs(result: dict) -> None:
+    """Pretty-print retrieved source documents for ad-hoc debugging."""
+
     if "source_documents" in result:
         print("\n🔎 Retrieved Documents:")
         for i, doc in enumerate(result["source_documents"], 1):

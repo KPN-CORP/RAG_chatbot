@@ -1,3 +1,5 @@
+"""Predefined lists of continuation words used by the chunking pipeline."""
+
 indo_continuations = [
     # Konjungsi koordinatif
     "dan", "atau", "serta", "tetapi", "namun", "melainkan", "padahal", "sedangkan",

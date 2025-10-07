@@ -1,3 +1,5 @@
+"""Utility helpers supporting deterministic document chunking."""
+
 import re
 import hashlib
 from typing import Dict, Any, Optional
@@ -31,21 +33,24 @@ TRAIL_NUM_RE = re.compile(r"(\s\d{1,3})$")          # trailing page line nums li
 BULLET_MARK_RE = re.compile(r"^(?:[•●\-–▪]|○|\d+\.)\s*")
 
 def _clean_line(s: str) -> str:
+    """Remove whitespace noise and trailing numbers from a line."""
+
     s = s.strip()
     s = TRAIL_NUM_RE.sub("", s)
     s = re.sub(r"\s+", " ", s)
     return s
 
 def _is_header(line: str) -> bool:
+    """Heuristically determine whether *line* looks like a header chunk."""
+
     return bool(HDR_RE.match(line)) and (" " in line or "-" in line or "/" in line)
 
 def _norm_for_embed(s: str) -> str:
+    """Normalise a string before creating embeddings."""
+
     s = s.strip().lower()
     s = re.sub(r"\s+", " ", s)
     return s
-
-def _normalize_header(h: str) -> str:
-    return re.sub(r"\s+", " ", (h or "").strip())
 
 def _to_number(s: str) -> Optional[float]:
     """Generic numeric parse: '1.200'->1200, '1200'->1200, '80'->80, else None."""
@@ -67,6 +72,3 @@ def _to_number(s: str) -> Optional[float]:
         except Exception:
             return None
     return None
-
-def _normalize_header(h: str) -> str:
-    return re.sub(r"\s+", " ", (h or "").strip())
