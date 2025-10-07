@@ -2,6 +2,12 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from config import google_api_key_name
 import os
 
+# Embeddings (Gemini via LangChain)
+try:
+    from langchain_google_genai import GoogleGenerativeAIEmbeddings
+except Exception:
+    from langchain.embeddings import GoogleGenerativeAIEmbeddings  # type: ignore
+
 # 1. Initialize the Hugging Face Embedding Model for Indonesian
 def get_huggingface_embeddings(semantic_embedding_model):
     """Initializes and returns a Hugging Face embedding model for Indonesian."""
@@ -16,7 +22,7 @@ def get_huggingface_embeddings(semantic_embedding_model):
     )
     return embeddings
 
-def get_gemini_embeddings(embedding_model, api_key):
+def get_gemini_embeddings(embedding_model, api_key=None):
     api_key_eff = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or os.environ.get(google_api_key_name)
     try:
         embeddings = GoogleGenerativeAIEmbeddings(model=embedding_model, google_api_key=api_key_eff)  # type: ignore

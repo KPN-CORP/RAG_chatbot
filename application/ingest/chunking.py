@@ -1,9 +1,10 @@
 # ingest/chunking.py
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional
-import hashlib, json, re, math
+import math
 from modules.chunking_utils import (
-    _clean_line, _is_header, _norm_for_embed, _checksum, _to_number, BULLET_MARK_RE
+    _clean_line, _is_header, _norm_for_embed, _checksum, _normalize_header,
+    BULLET_MARK_RE
 )
 
 # -----------------------------
@@ -17,12 +18,6 @@ __all__ = [
     "atomic_rules_to_chunks",
     "table_cells_to_chunks",
 ]
-
-# -----------------------------
-# Checksum / IDs
-# -----------------------------
-
-
 
 # -----------------------------
 # Parse to nodes (structure-first)
@@ -267,93 +262,6 @@ def atomic_rules_to_chunks(
         })
     return out
 
-# -----------------------------
-# Table → cell-level chunks
-# -----------------------------
-
-def _normalize_header(h: str) -> str:
-    return re.sub(r"\s+", " ", (h or "").strip())
-
-def _cell_chunk_text(table_title: Optional[str], row_kv: Dict[str, Any], col_name: str, row_idx: int) -> str:
-    row_keys = [k for k in row_kv.keys() if k.lower() in ("gol.", "gol", "grade", "id", "kode", "keterangan", "level", "kategori")]
-    row_ident = None
-    for k in row_keys:
-        v = str(row_kv.get(k, "")).strip()
-        if v:
-            row_ident = f"{k}={v}"
-            break
-    if not row_ident:
-        for k, v in row_kv.items():
-            if str(v).strip():
-                row_ident = f"{k}={v}"
-                break
-    title = f"{table_title} — " if table_title else ""
-    value = str(row_kv.get(col_name, "")).strip()
-    return f"{title}Row[{row_ident or row_idx}] • Col[{col_name}] ⇒ {value}"
-
-def _guess_id_column(rows: List[Dict[str, Any]]) -> Optional[str]:
-    """
-    Universal ID-column guesser:
-      - choose the column with the highest uniqueness ratio
-      - break ties by: fewer empty values, then leftmost order in the first row
-    Works for 'Gol.', 'ID', 'Code', 'Name', etc. without hardcoding.
-    """
-    if not rows:
-        return None
-    cols = list(rows[0].keys())
-    n = len(rows)
-    best: Tuple[float, int, str] = (-1.0, 10**9, "")  # (unique_ratio, empties, colname)
-    for ci, c in enumerate(cols):
-        vals = [str(r.get(c, "")).strip() for r in rows]
-        empties = sum(1 for v in vals if not v)
-        uniq = len(set(v for v in vals if v))
-        unique_ratio = (uniq / max(n - empties, 1))
-        score = (unique_ratio, -empties, -ci)  # maximize unique_ratio, minimize empties, prefer leftmost
-        if (unique_ratio, empties, ci) > (best[0], -best[1], -best[2] if isinstance(best[2], int) else 0):
-            best = (unique_ratio, empties, c)
-    # small sanity: if uniqueness is extremely low, skip and let row index be the id
-    return best[2] if isinstance(best[2], str) and best[0] >= 0.4 else None
-
-def _row_is_constant(row: Dict[str, Any], id_col: Optional[str]) -> Optional[str]:
-    """
-    If all non-ID non-empty values in the row are the same string, return that text (to collapse).
-    """
-    vals = []
-    for k, v in row.items():
-        if id_col and k == id_col:
-            continue
-        s = str(v or "").strip()
-        if s:
-            vals.append(s)
-    if not vals:
-        return None
-    return vals[0] if all(s == vals[0] for s in vals) else None
-
-
-def _row_summary_text(title: Optional[str], id_label: str, id_val: str,
-                      row: Dict[str, Any], id_col: Optional[str],
-                      max_cols: int = 8) -> str:
-    """
-    Compact one-liner summary per row: "Title — IDLABEL=IDVAL — col1=val1; col2=val2; ..."
-    Limits to max_cols for readability (adds “… +N more” if truncated).
-    """
-    prefix = f"{title} — " if title else ""
-    parts = []
-    shown = 0
-    for k, v in row.items():
-        if id_col and k == id_col:
-            continue
-        s = str(v or "").strip()
-        if not s:
-            continue
-        parts.append(f"{_normalize_header(k)}={s}")
-        shown += 1
-        if shown >= max_cols:
-            break
-    remaining = sum(1 for k, v in row.items() if (not id_col or k != id_col) and str(v or "").strip()) - shown
-    tail = f"; +{remaining} more" if remaining > 0 else ""
-    return f"{prefix}{id_label} {id_val} — " + ("; ".join(parts) + tail if parts else "(empty)")
-
 def table_cells_to_chunks(
     table_dict_rows: List[Dict[str, Any]],
     doc_id: str,
@@ -362,126 +270,61 @@ def table_cells_to_chunks(
     table_index: int,
     table_title: Optional[str] = None,
     *,
-    id_col: Optional[str] = None,
-    emit_row_summary: bool = True,
-    emit_cell_chunks: bool = True,
-    collapse_constant_rows: bool = True,
-    max_summary_cols: int = 8,
+    id_col: Optional[str] = None,            # optional: force an ID column, else auto-pick first column
+    include_identifier_cell: bool = True,    # include the ID column as a cell-chunk too
 ) -> List[Dict[str, Any]]:
     """
-    Universal, minimal-assumption table chunking:
-      - infers an ID column (or use the provided id_col)
-      - emits ONE row summary chunk per row (optional)
-      - collapses rows where all non-ID values are identical (optional)
-      - emits per-cell chunks for non-empty, non-ID cells (optional)
-      - keeps metadata small & compatible with your Milvus schema
+    Emit exactly one chunk per (row, col) cell.
+    - No summaries, no collapsing, no header/region parsing.
+    - breadcrumb = table_title (page header carried by the builder).
+    - Text format: "<breadcrumb> — Row[<id_label>=<id_val>] • Col[<col>] ⇒ <value>"
     """
     out: List[Dict[str, Any]] = []
     if not table_dict_rows:
         return out
 
-    # ID column: use provided or infer
-    _id_col = id_col or _guess_id_column(table_dict_rows)
+    cols = list(table_dict_rows[0].keys())
+    # auto-pick ID column if not provided: just use the first column
+    auto_id_col = cols[0] if cols else None
+    _id_col = id_col or auto_id_col
+
     table_id = f"{doc_id}::table::{page:04d}::{table_index:03d}"
 
     for r_idx, row in enumerate(table_dict_rows):
-        id_label = _normalize_header(_id_col) if _id_col else "Row"
-        id_val = str(row.get(_id_col, r_idx)) if _id_col else str(r_idx)
         row_id = f"{table_id}::row::{r_idx:04d}"
+        id_label = _normalize_header(_id_col) if _id_col else "Row"
+        id_val = str(row.get(_id_col, r_idx)) if _id_col in row else str(r_idx)
 
-        # 1) Row-constant collapse (e.g., "Sesuai tagihan, ...")
-        if collapse_constant_rows:
-            const_text = _row_is_constant(row, _id_col)
-            if const_text:
-                # constant chunk
-                txt = f"{table_title+' — ' if table_title else ''}{id_label} {id_val} — {const_text}"
-                cid = f"{row_id}::constant"
-                csum = _checksum(txt, source=source, page=page, extra={"table": table_id, "row": r_idx, "kind": "row_constant"})
-                out.append({
-                    "chunk_id": cid,
-                    "chunk_text": txt,
-                    "checksum": csum,
-                    "source": source,
-                    "page": page,
-                    "element_type": "table_row_constant",
-                    "table_id": table_id,
-                    "row_id": row_id,
-                    "col_name": None,
-                    "breadcrumb": table_title or "",
-                    "list_id": None,
-                })
-                # optional row summary
-                if emit_row_summary:
-                    rs = _row_summary_text(table_title, id_label, id_val, row, _id_col, max_cols=max_summary_cols)
-                    rcid = f"{row_id}::summary"
-                    rcsum = _checksum(rs, source=source, page=page, extra={"table": table_id, "row": r_idx, "kind": "row_summary"})
-                    out.append({
-                        "chunk_id": rcid,
-                        "chunk_text": rs,
-                        "checksum": rcsum,
-                        "source": source,
-                        "page": page,
-                        "element_type": "table_row",
-                        "table_id": table_id,
-                        "row_id": row_id,
-                        "col_name": None,
-                        "breadcrumb": table_title or "",
-                        "list_id": None,
-                    })
-                continue  # skip per-cell chunks for constant rows
+        for c_idx, col in enumerate(cols):
+            # optionally skip the identifier column as a separate cell
+            if not include_identifier_cell and _id_col and col == _id_col:
+                continue
 
-        # 2) Row summary (compact recall anchor)
-        if emit_row_summary:
-            rs = _row_summary_text(table_title, id_label, id_val, row, _id_col, max_cols=max_summary_cols)
-            rcid = f"{row_id}::summary"
-            rcsum = _checksum(rs, source=source, page=page, extra={"table": table_id, "row": r_idx, "kind": "row_summary"})
+            raw_val = row.get(col, "")
+            val = "" if raw_val is None else str(raw_val).strip()
+            if val == "":
+                continue  # skip truly empty cells
+
+            col_name = _normalize_header(col)
+            row_tag = f"Row[{id_label}={id_val}]" if _id_col else f"Row[{r_idx}]"
+            txt = f"{(table_title + ' — ') if table_title else ''}{row_tag} • Col[{col_name}] ⇒ {val}"
+
+            cid = f"{row_id}::cell::{c_idx:03d}"
+            csum = _checksum(txt, source=source, page=page, extra={"table": table_id, "row": r_idx, "col": col_name})
+
             out.append({
-                "chunk_id": rcid,
-                "chunk_text": rs,
-                "checksum": rcsum,
+                "chunk_id": cid,
+                "chunk_text": txt,
+                "checksum": csum,
                 "source": source,
                 "page": page,
-                "element_type": "table_row",
+                "element_type": "table_cell",
                 "table_id": table_id,
                 "row_id": row_id,
-                "col_name": None,
+                "col_name": col_name,
                 "breadcrumb": table_title or "",
                 "list_id": None,
             })
-
-        # 3) Per-cell chunks (non-ID, non-empty)
-        if emit_cell_chunks:
-            c_idx = -1
-            for k, v in row.items():
-                c_idx += 1
-                if _id_col and k == _id_col:
-                    continue
-                s = str(v or "").strip()
-                if not s:
-                    continue
-                col_name = _normalize_header(k)
-                txt = f"{table_title+' — ' if table_title else ''}{id_label} {id_val} • {col_name}: {s}"
-                cid = f"{row_id}::cell::{c_idx:03d}"
-                csum = _checksum(txt, source=source, page=page, extra={"table": table_id, "row": r_idx, "col": col_name})
-                # optional numeric value (tiny, helpful for range filters)
-                val_num = _to_number(s)
-
-                out.append({
-                    "chunk_id": cid,
-                    "chunk_text": txt,
-                    "checksum": csum,
-                    "source": source,
-                    "page": page,
-                    "element_type": "table_cell",
-                    "table_id": table_id,
-                    "row_id": row_id,
-                    "col_name": col_name,
-                    "breadcrumb": table_title or "",
-                    "list_id": None,
-                    # minimal, universal extra for numeric range queries
-                    "value_num": val_num,
-                })
-
     return out
 
 # -----------------------------

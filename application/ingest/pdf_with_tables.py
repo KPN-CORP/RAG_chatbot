@@ -120,7 +120,7 @@ def clean_table(table):
     '''
     for row in table:
         for i, cell in enumerate(row):
-            if cell==None and i>0:
+            if cell is None and i>0:
                 row[i] = row[i-1]
     return table
 

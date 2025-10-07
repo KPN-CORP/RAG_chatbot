@@ -8,14 +8,12 @@ End-to-end ingest with Gemini embeddings + Milvus storage.
 
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional, Set
-import os, logging
+import os
+import logging
 
 # Embeddings (Gemini via LangChain)
-try:
-    from langchain_google_genai import GoogleGenerativeAIEmbeddings
-except Exception:
-    from langchain.embeddings import GoogleGenerativeAIEmbeddings  # type: ignore
-
+from models.embbedings import get_gemini_embeddings
+from congig import google_api_key_name
 # Milvus
 from pymilvus import connections, FieldSchema, CollectionSchema, Collection, DataType, utility
 
@@ -135,13 +133,8 @@ def embed_batch_texts(texts: List[str], model: str, batch_size: int, api_key: Op
     if dry_run:
         dim = 1536
         return [[0.001 * ((i + 1) % 10) for _ in range(dim)] for i, _ in enumerate(texts)]
-    if api_key:
-        try:
-            emb = GoogleGenerativeAIEmbeddings(model=model, google_api_key=api_key)  # type: ignore
-        except TypeError:
-            emb = GoogleGenerativeAIEmbeddings(model=model, api_key=api_key)  # type: ignore
-    else:
-        emb = GoogleGenerativeAIEmbeddings(model=model)
+    
+    emb = get_gemini_embeddings(model, google_api_key_name)
     out: List[List[float]] = []
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i+batch_size]
@@ -263,11 +256,7 @@ def ingest_pages_to_milvus(
     then embed & store in Milvus.
     """
     # Embeddings object reused for grouping + fallback splitting
-    api_key_eff = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    try:
-        embeddings = GoogleGenerativeAIEmbeddings(model=embedding_model, google_api_key=api_key_eff)  # type: ignore
-    except TypeError:
-        embeddings = GoogleGenerativeAIEmbeddings(model=embedding_model, api_key=api_key_eff)  # type: ignore
+    embeddings = get_gemini_embeddings(embedding_model, api_key)
 
     chunks = build_chunks_from_pages(
         pages=pages,

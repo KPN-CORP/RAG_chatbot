@@ -4,6 +4,11 @@ from typing import Dict, Any, Optional
 # from dataclasses import dataclass
 import json
 
+
+# -----------------------------
+# Checksum / IDs
+# -----------------------------
+
 def _checksum(text: str, source: Optional[str] = None, page: Optional[int] = None, extra: Optional[Dict[str, Any]] = None) -> str:
     """Stable checksum for dedupe (text + context)."""
     m = hashlib.sha1()
@@ -16,18 +21,12 @@ def _checksum(text: str, source: Optional[str] = None, page: Optional[int] = Non
         m.update(f"|x:{json.dumps(extra, sort_keys=True, ensure_ascii=False)}".encode("utf-8"))
     return m.hexdigest()
 
-# @dataclass
-# class BuiltChunk:
-#     chunk_id: str
-#     chunk_text: str
-#     checksum: str
-#     metadata: Dict[str, Any]
-
 # -----------------------------
 # Text normalization / heuristics
 # -----------------------------
 
-HDR_RE = re.compile(r"^[A-Z0-9 ./-]{6,}$")          # heuristic ALL-CAPS headers
+# HDR_RE = re.compile(r"^[A-Z0-9 ./-]{6,}$")          # heuristic ALL-CAPS headers
+HDR_RE = re.compile(r"^[A-Z0-9 ()/.,&\-’'–—:]{6,}$")
 TRAIL_NUM_RE = re.compile(r"(\s\d{1,3})$")          # trailing page line nums like " 21"
 BULLET_MARK_RE = re.compile(r"^(?:[•●\-–▪]|○|\d+\.)\s*")
 
@@ -69,3 +68,5 @@ def _to_number(s: str) -> Optional[float]:
             return None
     return None
 
+def _normalize_header(h: str) -> str:
+    return re.sub(r"\s+", " ", (h or "").strip())

@@ -1,10 +1,12 @@
 # filename: vectorstore.py
 # from langchain.vectorstores import Milvus #deprecated
 from langchain_milvus import Milvus
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from pymilvus import connections
+from model.embbedings import get_gemini_embeddings
 
-from config import milvus_host, milvus_port, collection_name, google_api_key_name, embedding_model
+from config import (
+    milvus_host, milvus_port, collection_name, google_api_key_name, embedding_model
+)
 import os
 
 def get_vectorstore():
@@ -13,7 +15,7 @@ def get_vectorstore():
     connections.connect(alias="default", host=milvus_host, port=milvus_port)
 
     # 2) Init embeddings (Gemini)
-    embeddings = GoogleGenerativeAIEmbeddings(model=embedding_model, google_api_key=os.environ.get(google_api_key_name))
+    embeddings = get_gemini_embeddings(embedding_model, os.environ.get(google_api_key_name))
 
     # 3) Load an existing collection as a vectorstore
     try:
@@ -26,7 +28,8 @@ def get_vectorstore():
             enable_dynamic_field=True,    # new way to handle metadata
             vector_field="embedding"
         )
-    except:
+    except Exception as e:
+        print(("Using fallback with embedding_field='embedding' due to error:", e))
         vectorstore = Milvus(
             embedding_function=embeddings,
             collection_name=collection_name,

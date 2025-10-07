@@ -20,7 +20,6 @@ import logging
 
 # LangChain imports (use provider wrapper)
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.chains import ConversationalRetrievalChain
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from langchain.output_parsers import PydanticOutputParser
