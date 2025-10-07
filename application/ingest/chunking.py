@@ -1,688 +1,580 @@
-# from langchain.text_splitter import RecursiveCharacterTextSplitter
+# ingest/chunking.py
+from __future__ import annotations
+from typing import List, Dict, Any, Tuple, Optional
+import hashlib, json, re, math
+from modules.chunking_utils import (
+    _clean_line, _is_header, _norm_for_embed, _checksum, _to_number, BULLET_MARK_RE
+)
 
-import hashlib
-import unicodedata
-import re
-import uuid
-import time
-from typing import List, Dict, Any
-from modules.continuation_words import indo_continuations as _IND_CONT, english_continuation as _EN_CONT
+# -----------------------------
+# Public API (what you import)
+# -----------------------------
+__all__ = [
+    "build_chunks_from_pages",
+    "parse_policy_to_nodes",
+    "group_atomic_rules_semantic",
+    "semantic_refine_rules",
+    "atomic_rules_to_chunks",
+    "table_cells_to_chunks",
+]
 
-# ---------- Config / heuristics ----------
-# Strong sentence terminator
-_STRONG_END = re.compile(r'[\.!\?…;:]$')
-# Heading heuristic (short, many uppercase)
-_HEADING_HEURISTIC = re.compile(r'^[A-Z0-9 \-\/]{1,80}$')
-# Standalone page/line number
-_STANDALONE_NUMBER = re.compile(r'^\d+\s*$')
-# List start markers
-_LIST_START = re.compile(r'^[\u2022\-\*\•\●]\s+|^\d+[\.\)]\s+')
-
-# Combined connector set (lowercase)
-_CONNECTORS = _IND_CONT+ _EN_CONT
+# -----------------------------
+# Checksum / IDs
+# -----------------------------
 
 
-def canonicalize_text(s: str, lower: bool = False) -> str:
-    """Normalize text for stable checksum: unicode, collapse whitespace, optional lowercase."""
-    if s is None:
-        s = ""
-    s = unicodedata.normalize("NFC", str(s))
-    s = s.strip()
-    s = re.sub(r"\s+", " ", s).strip()
-    # normalize smart quotes
-    s = s.replace("“", '"').replace("”", '"').replace("’", "'").replace("`", "'")
-    # normalize common dash placeholders
-    if s in ["-", "—", "–", "n/a", "N/A", "NA", "null", "None"]:
-        return ""
-    return s
 
-def sha256_checksum(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+# -----------------------------
+# Parse to nodes (structure-first)
+# -----------------------------
 
-def row_dict_to_text(row: Dict[str, Any]) -> str:
+def parse_policy_to_nodes(text: str, section_hint: Optional[str] = None) -> List[Dict[str, Any]]:
     """
-    Convert a row dict into a stable, LLM- and vector-db-friendly text string.
-    - Keeps the same signature and return type as your original function.
-    - Produces natural-language sentences (one per non-empty cell) joined by newlines.
-    - Deterministic ordering: keys sorted case-insensitively.
-    - Canonicalizes whitespace and normalizes common "empty" tokens.
-    - If a common primary key like 'Gol.'/'Gol'/'ID' exists, sentences are prefixed with it
-      (e.g. "For Gol. 9, the value for 'Header' is ...").
+    Convert raw narrative text into nodes with breadcrumb 'path' and 'kind'.
+    node = {'path': ['SECTION','Subsection'], 'kind':'header'|'bullet'|'para', 'line': str}
+    - section_hint: carried header from previous page (if any).
     """
+    path: List[str] = [section_hint] if section_hint else []
+    out: List[Dict[str, Any]] = []
 
-    if not isinstance(row, dict):
-        return canonicalize_text(row)
-
-    # deterministic key order
-    keys = sorted(row.keys(), key=lambda k: str(k).lower())
-
-    # detect a primary-key-like column if present
-    pk_candidates = [k for k in keys if str(k).lower() in {"gol.", "gol", "id", "no", "nomor", "kode"}]
-    primary_key = pk_candidates[0] if pk_candidates else None
-    primary_val = canonicalize_text(row.get(primary_key)) if primary_key else ""
-
-    sentences = []
-    for k in keys:
-        # canonicalize header and value
-        header = canonicalize_text(k)
-        value = canonicalize_text(row.get(k))
-        # skip empties
-        if value == "":
-            continue
-        # keep header readable but bounded
-        if len(header) > 120:
-            header = header[:80].rstrip() + " … " + header[-30:].lstrip()
-        # create LLM-friendly sentence; prefer "For <PK>" when available and this isn't the PK cell itself
-        if primary_key and k != primary_key and primary_val:
-            sentence = f"For {primary_key} {primary_val}, the value for '{header}' is {value}."
-        elif primary_key and k == primary_key:
-            # describe the primary key itself
-            sentence = f"{primary_key}: {value}."
-        else:
-            sentence = f"The value for '{header}' is {value}."
-        sentences.append(sentence)
-
-    # fallback: if everything was empty (or only primary present but skipped), return canonicalized row repr
-    if not sentences:
-        # produce compact "k: v | k2: v2" style as last resort (deterministic)
-        parts = []
-        for k in keys:
-            v = canonicalize_text(row.get(k))
-            parts.append(f"{k}: {v}" if v else f"{k}:")
-        return " | ".join(parts)
-
-    # join sentences with newline to keep single-string output while preserving chunk granularity
-    return "\n".join(sentences)
-
-# ---------- Helper functions (from earlier answers) ----------
-_sentence_split_re = re.compile(r'(?<=[\.\?!])\s+|\n+')
-
-def split_into_units(text: str) -> List[str]:
-    t = text.replace('\r\n', '\n').strip()
-    lines = t.split('\n')
-    units = []
-    buffer = []
-    for line in lines:
-        sline = line.strip()
-        if not sline:
-            if buffer:
-                units.append(" ".join(buffer).strip())
-                buffer = []
+    for raw in text.splitlines():
+        line = _clean_line(raw)
+        if not line:
             continue
 
-        # Heading heuristic
-        if len(sline) <= 80 and re.match(r'^[A-Z0-9 \-\/]+$', sline) and sum(1 for c in sline if c.isupper())/max(1,len(sline)) > 0.4:
-            if buffer:
-                units.append(" ".join(buffer).strip())
-                buffer = []
-            units.append(sline)
+        if _is_header(line):
+            title = line.title()
+            path = [title]
+            out.append({'path': path[:], 'kind': 'header', 'line': title})
             continue
 
-        # Bullets
-        if re.match(r'^[\u2022\u2023\u25E6\u2043\u2219\-\*\•\●]\s+', sline) or sline.startswith('●'):
-            if buffer:
-                units.append(" ".join(buffer).strip())
-                buffer = []
-            units.append(re.sub(r'^[\u2022\u2023\u25E6\u2043\u2219\-\*\•\●]\s*', '', sline))
-            continue
-
-        # Standalone numbers (like page markers)
-        if re.match(r'^\d+\s*$', sline):
-            if buffer:
-                units.append(" ".join(buffer).strip())
-                buffer = []
-            units.append(sline)
-            continue
-
-        if re.match(r'^\d+[\.\)]\s+', sline):
-            if buffer:
-                units.append(" ".join(buffer).strip())
-                buffer = []
-            units.append(sline)
-            continue
-
-        buffer.append(sline)
-
-    if buffer:
-        units.append(" ".join(buffer).strip())
-
-    # merge stray numeric separators with next if needed
-    merged = []
-    skip_next = False
-    for i, u in enumerate(units):
-        if skip_next:
-            skip_next = False
-            continue
-        if re.match(r'^\d+\s*$', u) and i+1 < len(units):
-            merged.append(f"{u} {units[i+1]}".strip())
-            skip_next = True
-        else:
-            merged.append(u)
-    return merged
-
-def split_long_unit_by_sentence(unit: str, max_chars: int) -> List[str]:
-    parts = [s.strip() for s in _sentence_split_re.split(unit) if s.strip()]
-    groups = []
-    cur = ""
-    for p in parts:
-        if len(cur) + len(p) + 1 <= max_chars:
-            cur = (cur + " " + p).strip() if cur else p
-        else:
-            if cur:
-                groups.append(cur)
-            if len(p) > max_chars:
-                for i in range(0, len(p), max_chars):
-                    groups.append(p[i:i+max_chars])
-                cur = ""
-            else:
-                cur = p
-    if cur:
-        groups.append(cur)
-    return groups
-
-def semantic_chunk(text: str, chunk_size: int = 500, chunk_overlap: int = 50) -> List[str]:
-    units = split_into_units(text)
-    chunks = []
-    cur = ""
-    for unit in units:
-        unit = unit.strip()
-        if not unit:
-            continue
-        if len(unit) > chunk_size:
-            if cur:
-                chunks.append(cur.strip())
-                cur = ""
-            pieces = split_long_unit_by_sentence(unit, chunk_size)
-            for p in pieces:
-                if chunks and chunk_overlap > 0:
-                    tail = chunks[-1][-chunk_overlap:]
-                    chunks.append((tail + " " + p).strip())
+        if BULLET_MARK_RE.match(line):
+            content = BULLET_MARK_RE.sub("", line).strip()
+            if content.endswith(":"):
+                label = content[:-1].strip()
+                if path:
+                    if len(path) == 1:
+                        path = [path[0], label]
+                    else:
+                        path[-1] = label
                 else:
-                    chunks.append(p)
-            continue
-
-        if cur and (len(cur) + 1 + len(unit) > chunk_size):
-            chunks.append(cur.strip())
-            if chunk_overlap > 0:
-                overlap_text = chunks[-1][-chunk_overlap:]
-                cur = overlap_text + " " + unit
+                    path = [label]
+                out.append({'path': path[:], 'kind': 'para', 'line': label})
             else:
-                cur = unit
+                out.append({'path': path[:], 'kind': 'bullet', 'line': content})
         else:
-            cur = (cur + " " + unit).strip() if cur else unit
+            out.append({'path': path[:], 'kind': 'para', 'line': line})
 
-    if cur:
-        chunks.append(cur.strip())
-    return chunks
+    return out
 
-# ---------- List parser (returns item dicts) ----------
-_numbered_item_re = re.compile(r'^\s*(\d+)[\.\)]\s*(.*)', re.UNICODE)
-_bullet_item_re   = re.compile(r'^\s*[\u2022\u2023\u25E6\u2043\u2219\-\*\•\●]\s*(.*)', re.UNICODE)
+# -----------------------------
+# Semantic grouping utilities
+# -----------------------------
 
-def parse_list_block(text_block: str, header_hint: str = None, list_id: str = None) -> List[Dict]:
-    import uuid as _uuid
-    if list_id is None:
-        list_id = str(_uuid.uuid4())
+def _cosine(a: List[float], b: List[float]) -> float:
+    """Cosine similarity without external deps."""
+    dot = sum(x*y for x, y in zip(a, b))
+    na = math.sqrt(sum(x*x for x in a)) or 1e-12
+    nb = math.sqrt(sum(y*y for y in b)) or 1e-12
+    return dot / (na * nb)
 
-    lines = [ln.rstrip() for ln in text_block.splitlines()]
-    lines = [ln for ln in lines if ln.strip() != ""]
-    header = header_hint
-    if not header and lines:
-        if re.match(r'^[A-Z0-9 \-/]{3,80}$', lines[0].strip()):
-            header = lines[0].strip()
-            lines = lines[1:]
-
-    items = []
-    buffer = None
-    current_pos = 0
-
-    def flush_buffer():
-        nonlocal buffer, items, current_pos
-        if buffer:
-            idx, txt = buffer
-            chunk_text = (header + " | " + txt) if header else txt
-            items.append({
-                "list_id": list_id,
-                "header": header,
-                "item_index": idx,
-                "text": txt,
-                "chunk_text": chunk_text,
-                "position": current_pos
-            })
-            current_pos += 1
-            buffer = None
-
-    for ln in lines:
-        ln_stripped = ln.strip()
-        m = _numbered_item_re.match(ln_stripped)
-        if m:
-            flush_buffer()
-            idx = int(m.group(1))
-            text_after = m.group(2).strip()
-            buffer = (idx, text_after)
-            continue
-
-        m2 = _bullet_item_re.match(ln_stripped)
-        if m2:
-            flush_buffer()
-            buffer = (None, m2.group(1).strip())
-            continue
-
-        if re.match(r'^\d+\s*$', ln_stripped):
-            flush_buffer()
-            continue
-
-        if buffer:
-            idx, prev = buffer
-            buffer = (idx, prev + " " + ln_stripped)
-        else:
-            buffer = (None, ln_stripped)
-
-    flush_buffer()
-    return items
-
-# ---------- Small helper: extract list blocks from a narrative ----------
-def extract_list_blocks(text: str) -> List[Dict[str, str]]:
+def _embed_small_texts(texts: List[str], embeddings) -> List[List[float]]:
     """
-    Naive line-scanner that extracts consecutive lines that look like a list block:
-    A block starts when we see either:
-      - a heading-like line (short ALLCAPS) followed by lines that contain bullets or numbered items
-      - OR we encounter a line that starts with bullet/number and collect until blank or next big heading
-    Returns list of dicts: {"block": <text>, "header": <maybe header>}
+    Batch-embed short strings for semantic grouping (not stored).
+    Expect embeddings to implement .embed_documents([...]).
     """
-    lines = text.replace('\r\n', '\n').split('\n')
-    n = len(lines)
-    i = 0
-    blocks = []
-    while i < n:
-        ln = lines[i].strip()
-        if not ln:
-            i += 1
-            continue
+    if not texts:
+        return []
+    return embeddings.embed_documents(texts)
 
-        # detect if this line is a heading candidate and next lines show list markers
-        header_candidate = None
-        if len(ln) <= 80 and re.match(r'^[A-Z0-9 \-\/]{3,80}$', ln) and i+1 < n:
-            # look ahead for bullet or numbered line in next 3 lines
-            lookahead = "\n".join(lines[i+1:min(n, i+5)])
-            if re.search(r'(^|\n)\s*[\u2022\-\*\•\●]|\n\s*\d+[\.\)]', lookahead):
-                header_candidate = ln
-                start = i + 1
-                # collect list lines
-                j = start
-                while j < n and lines[j].strip() != "":
-                    # stop if we reach another header-like line with no bullets following (conservative)
-                    j += 1
-                block_text = "\n".join(lines[i:j])
-                blocks.append({"block": block_text, "header": header_candidate, "start": i, "end": j})
-                i = j
-                continue
+# -----------------------------
+# Group bullets/paras into Atomic Rules (semantic)
+# -----------------------------
 
-        # detect direct list start (line starts with bullet or number)
-        if re.match(r'^[\u2022\-\*\•\●]\s+|^\d+[\.\)]\s+', ln) or ln.startswith('●'):
-            j = i
-            while j < n and lines[j].strip() != "":
-                j += 1
-            block_text = "\n".join(lines[i:j])
-            blocks.append({"block": block_text, "header": None, "start": i, "end": j})
-            i = j
-            continue
-
-        i += 1
-
-    return blocks
-
-
-# ---------- Helper tests ----------
-def _is_heading_like(line: str) -> bool:
-    l = line.strip()
-    if not l:
-        return False
-    if _HEADING_HEURISTIC.match(l):
-        # require a reasonable fraction uppercase to be considered heading
-        upper_frac = sum(1 for c in l if c.isupper()) / max(1, len(l))
-        return upper_frac > 0.4
-    return False
-
-def _first_token_lower_or_connector(line: str) -> bool:
-    ln = line.strip()
-    if not ln:
-        return False
-    # first char lowercase is strong signal
-    if ln[0].islower():
-        return True
-    # starts with punctuation commonly used mid-sentence
-    if ln[0] in {',','('}:
-        return True
-    # first token connector
-    first = re.split(r'\s+', ln)[0].strip(",(").lower()
-    if first in _CONNECTORS:
-        return True
-    return False
-
-# ---------- Main merge function with hyphenation ----------
-def merge_across_page_breaks(
-    pages: List[str],
-    max_join_lines: int = 2
-) -> List[str]:
-    """
-    Merge page narratives where a sentence is likely split across a page break.
-    - pages: list of page narrative strings in order
-    - max_join_lines: how many lines to borrow from next page when joining (default 2)
-    Returns a new list of page narratives (same length) where some next-page lines
-    have been stolen and appended to previous page when safe.
-    """
-    merged = []
-    i = 0
-    n = len(pages)
-    # operate on a mutable copy to allow removing borrowed lines from next page
-    pages_copy = list(pages)
-
-    while i < n:
-        cur = pages_copy[i] or ""
-        # prepare last non-empty line check
-        cur_lines = [ln for ln in cur.splitlines()]
-        last_nonempty = ""
-        for ln in reversed(cur_lines):
-            if ln.strip():
-                last_nonempty = ln.rstrip()
-                break
-
-        will_join = False
-        force_hyphen_join = False
-        # If last non-empty line ends with hyphen -> force join (high confidence)
-        if last_nonempty.endswith('-'):
-            force_hyphen_join = True
-            will_join = True
-        else:
-            # If last line doesn't end with strong punctuation and is not heading/list/number -> candidate
-            if last_nonempty and not _STRONG_END.search(last_nonempty) and not _is_heading_like(last_nonempty) \
-               and not _STANDALONE_NUMBER.match(last_nonempty) and not _LIST_START.match(last_nonempty):
-                will_join = True
-
-        if i+1 < n and will_join:
-            nxt = pages_copy[i+1] or ""
-            nxt_lines = [ln for ln in nxt.splitlines()]
-            # find first non-empty line on next page
-            first_nonempty = ""
-            first_idx = None
-            for idx, ln in enumerate(nxt_lines):
-                if ln.strip():
-                    first_nonempty = ln.strip()
-                    first_idx = idx
-                    break
-
-            # if no content on next page -> nothing to join
-            if not first_nonempty:
-                merged.append(cur)
-                i += 1
-                continue
-
-            # do not join if next line is heading/list/standalone number
-            if _is_heading_like(first_nonempty) or _LIST_START.match(first_nonempty) or _STANDALONE_NUMBER.match(first_nonempty):
-                merged.append(cur)
-                i += 1
-                continue
-
-            # Hyphenation case handling (force join): remove trailing hyphen and concatenate properly
-            if force_hyphen_join:
-                # remove trailing hyphen from last_nonempty
-                # if next starts with lowercase, just concatenate; else add a space between
-                first_part = first_nonempty
-                # remove trailing '-' from cur
-                # replace only the last occurrence
-                cur = cur.rstrip()
-                # drop trailing hyphen
-                cur = cur[:-1]
-                # decide whether to insert a space
-                if first_part and first_part[0].isupper():
-                    # if next part starts uppercase, add a space
-                    cur = cur + " " + first_part
-                else:
-                    # lowercase likely continuation inside word, no extra space
-                    cur = cur + first_part
-                # remove the borrowed line(s) from next page
-                remaining = nxt_lines[first_idx+1:] if first_idx is not None else nxt_lines
-                pages_copy[i+1] = "\n".join(remaining).lstrip()
-                merged.append(cur)
-                i += 1
-                continue
-
-            # otherwise, continuation heuristics: check first token lowercase or connector
-            if _first_token_lower_or_connector(first_nonempty):
-                # collect up to max_join_lines from next page (but stop at headings/list markers)
-                borrowed = []
-                taken = 0
-                for ln in nxt_lines[first_idx:]:
-                    if ln.strip() == "":
-                        break
-                    # stop if the line looks like a heading or a list start (conservative)
-                    if _is_heading_like(ln.strip()) or _LIST_START.match(ln.strip()):
-                        break
-                    borrowed.append(ln.strip())
-                    taken += 1
-                    if taken >= max_join_lines:
-                        break
-
-                if borrowed:
-                    appended = " ".join(borrowed)
-                    cur = cur.rstrip() + " " + appended
-                    # remove borrowed lines from next page
-                    remaining = nxt_lines[first_idx + taken:]
-                    pages_copy[i+1] = "\n".join(remaining).lstrip()
-                    merged.append(cur)
-                    i += 1
-                    continue
-
-        # default: no join
-        merged.append(cur)
-        i += 1
-
-    return merged
-
-def pages_to_chunks(
-    pdf_pages: List[Dict[str, Any]],
-    source: str,
-    chunk_size: int = 500,
-    chunk_overlap: int = 50,
-    language: str = "id"
+def group_atomic_rules_semantic(
+    nodes: List[Dict[str, Any]],
+    embeddings,                           # required (e.g., GoogleGenerativeAIEmbeddings instance)
+    sim_threshold: float = 0.82,          # tune 0.78–0.86
+    use_percentile: bool = False,
+    percentile: int = 90
 ) -> List[Dict[str, Any]]:
     """
-    Convert cleaned/formatted pdf_pages into chunk metadata ready for dedupe/embedding.
-    Each returned item is a dict with fields including chunk_id, chunk_text, checksum and metadata.
-    Upgraded pages_to_chunks:
-     - Extracts list blocks and indexes them as item-level chunks
-     - Removes list blocks from narrative before semantic chunking
-    NOTE: This function does not persist or embed — it only returns canonical chunks.
-   
-    Upgraded: extracts list blocks -> item-level chunks; removes list blocks from narrative before semantic chunking. 
+    Group bullets/paras into atomic rules by semantic continuity:
+      - New header => flush.
+      - Path change => flush.
+      - Else: cosine similarity of consecutive items >= threshold => same rule.
+
+    If use_percentile=True, we compute consecutive similarities across the page
+    and set threshold to the given percentile(similarities).
     """
+    # Collect sequence with headers marked
+    items: List[Tuple[List[str], str]] = []   # (path, text)
+    paths: List[List[str]] = []
+    for n in nodes:
+        if n['kind'] == 'header':
+            items.append((['__HEADER__'], n['line'].strip()))
+            paths.append(['__HEADER__'])
+        else:
+            items.append((n['path'][:], n['line'].strip()))
+            paths.append(n['path'][:])
 
-    all_chunks: List[Dict[str, Any]] = []
-    # table_index is local to each page (keeps original table_index); we'll also create unique table_id using source/page/table_index
-     
-    # --- 0) Ensure pages are sorted by page number (important) ---
-    pdf_pages_sorted = sorted(pdf_pages, key=lambda p: int(p.get("page", 0)))
-    
-# --- 1) Build list of narrative strings in order ---
-    narrative_texts = [p.get("narrative_text") or "" for p in pdf_pages_sorted]
-     # --- 2) Merge across page breaks (hyphenation-aware) ---
-    merged_texts = merge_across_page_breaks(narrative_texts, max_join_lines=2)
+    if not items:
+        return []
 
-    # Safety: ensure merged_texts length matches pages; if not, pad/truncate conservatively
-    if len(merged_texts) < len(pdf_pages_sorted):
-        merged_texts += [""] * (len(pdf_pages_sorted) - len(merged_texts))
-    elif len(merged_texts) > len(pdf_pages_sorted):
-        merged_texts = merged_texts[: len(pdf_pages_sorted)]
-    
-    # merged_texts is a list of strings aligned with narrative_texts (same length)
-    # write them back into page dicts (preserve other keys)
-    for idx, page_dict in enumerate(pdf_pages_sorted):
-        page_dict["narrative_text"] = merged_texts[idx]
+    # Embed all non-header lines once (batched)
+    idxs, to_embed = [], []
+    for i, (_, txt) in enumerate(items):
+        if paths[i] and paths[i][0] == '__HEADER__': 
+            continue
+        norm = _norm_for_embed(txt)
+        idxs.append(i)
+        to_embed.append(norm)
+    vecs = _embed_small_texts(to_embed, embeddings) if to_embed else []
+    emb_by_idx: Dict[int, List[float]] = {i: v for i, v in zip(idxs, vecs)}
 
-    for page in pdf_pages_sorted:
-        page_num = page.get("page")
-        # 1) Narrative text -> chunked
-        narrative = page.get("narrative_text") or ""
-        if narrative and narrative.strip():
-            # optional: canonicalize the narrative before splitting (keeps chunking deterministic)
-            narrative_canon = canonicalize_text(narrative)
-            # 1) find list blocks and parse them into item-level chunks
-            list_blocks = extract_list_blocks(narrative_canon)
-            # keep track of ranges to remove from narrative
-            remove_spans = []
-            for lb in list_blocks:
-                block_text = lb["block"]
-                header_hint = lb.get("header")
-                items = parse_list_block(block_text, header_hint=header_hint)
-                for it in items:
-                    cid = uuid.uuid4().hex
-                    checksum = sha256_checksum(it["chunk_text"]) if 'sha256_checksum' in globals() else ""  # replace with your checksum fn
-                    meta = {
-                        "chunk_id": cid,
-                        "source": source,
-                        "page": page_num,
-                        "element_type": "list_item",
-                        "list_id": it["list_id"],
-                        "item_index": it["item_index"],
-                        "position": it["position"],
-                        "table_id": None,
-                        "row_id": None, 
-                        "language": language,
-                        "chunk_text": it["chunk_text"],
-                        "checksum": checksum,
-                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                    }
-                    all_chunks.append(meta)
+    # Compute consecutive sims for same path
+    sims: List[float] = []
+    for i in range(1, len(items)):
+        if paths[i-1] and paths[i-1][0] == '__HEADER__': 
+            continue
+        if paths[i] and paths[i][0] == '__HEADER__':
+            continue
+        if paths[i] != paths[i-1]:
+            continue
+        if (i-1) not in emb_by_idx or i not in emb_by_idx:
+            continue
+        sims.append(float(_cosine(emb_by_idx[i-1], emb_by_idx[i])))
 
-                # mark span for removal
-                remove_spans.append((lb["start"], lb["end"]))
+    # Adaptive threshold (optional)
+    if use_percentile and sims:
+        s = sorted(sims)
+        k = min(max(int(len(s) * (percentile / 100.0)) - 1, 0), len(s) - 1)
+        sim_threshold = s[k]
 
-            # remove list blocks from narrative by line indices (to avoid duplication)
-            if remove_spans:
-                lines = narrative_canon.split('\n')
-                keep_lines = []
-                for idx, ln in enumerate(lines):
-                    drop = False
-                    for s, e in remove_spans:
-                        if idx >= s and idx < e:
-                            drop = True
-                            break
-                    if not drop:
-                        keep_lines.append(ln)
-                narrative_canon = "\n".join(keep_lines).strip()
+    # Grouping pass
+    rules: List[Dict[str, Any]] = []
+    buf: List[str] = []
+    cur_path: Optional[List[str]] = None
 
-            # 2) semantic-chunk the remaining narrative
-            pieces = semantic_chunk(narrative_canon, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-            for piece in pieces:
-                cid = uuid.uuid4().hex
-                checksum = sha256_checksum(canonicalize_text(piece))
-                meta = {
+    def flush():
+        nonlocal buf, cur_path
+        if buf and cur_path:
+            rules.append({'path': cur_path[:], 'text': " ".join(buf).strip()})
+        buf = []
+
+    for i, (p, txt) in enumerate(items):
+        if p and p[0] == '__HEADER__':
+            flush()
+            continue
+
+        if cur_path is not None and p != cur_path:
+            flush()
+
+        if cur_path is None:
+            cur_path = p[:]
+            buf = [txt]
+            continue
+
+        # continuity check with previous item if same path and both embedded
+        if i-1 >= 0 and paths[i-1] == cur_path and (i-1) in emb_by_idx and i in emb_by_idx:
+            sim = _cosine(emb_by_idx[i-1], emb_by_idx[i])
+            if sim >= sim_threshold:
+                buf.append(txt)
+            else:
+                flush()
+                cur_path = p[:]
+                buf = [txt]
+        else:
+            flush()
+            cur_path = p[:]
+            buf = [txt]
+
+    if buf:
+        flush()
+    return rules
+
+# -----------------------------
+# Semantic fallback for long prose
+# -----------------------------
+
+def semantic_refine_rules(
+    rules: List[Dict[str, Any]],
+    embeddings=None,
+    enable: bool = True,
+    max_chars: int = 1000,
+    breakpoint_threshold_type: str = "percentile",
+    breakpoint_threshold_amount: int = 95,
+) -> List[Dict[str, Any]]:
+    """
+    Split only long rules using LangChain SemanticChunker (if available).
+    Keeps same path for all splits. No-op if not enabled or module missing.
+    """
+    if not enable or embeddings is None:
+        return rules
+    try:
+        from langchain_experimental.text_splitter import SemanticChunker  # lazy import
+    except Exception:
+        return rules
+
+    splitter = SemanticChunker(
+        embeddings=embeddings,
+        breakpoint_threshold_type=breakpoint_threshold_type,
+        breakpoint_threshold_amount=breakpoint_threshold_amount,
+    )
+    refined: List[Dict[str, Any]] = []
+    for r in rules:
+        t = r['text']
+        if len(t) <= max_chars:
+            refined.append(r)
+            continue
+        docs = splitter.create_documents([t])
+        for d in docs:
+            refined.append({'path': r['path'], 'text': d.page_content.strip()})
+    return refined
+
+# -----------------------------
+# Convert atomic rules -> chunks
+# -----------------------------
+
+def atomic_rules_to_chunks(
+    rules: List[Dict[str, Any]],
+    doc_id: str,
+    source: str,
+    page: Optional[int]
+) -> List[Dict[str, Any]]:
+    """Make child chunks for atomic rules (embed these)."""
+    out: List[Dict[str, Any]] = []
+    for i, r in enumerate(rules, 1):
+        breadcrumb = " > ".join(r['path']) if r['path'] else ""
+        text = (f"{breadcrumb} — {r['text']}".strip() if breadcrumb else r['text'].strip())
+        meta = {
+            "source": source,
+            "page": page,
+            "element_type": "policy_rule",
+            "breadcrumb": breadcrumb,
+            "list_id": None,
+            "table_id": None,
+            "row_id": None,
+            "col_name": None,
+        }
+        cid = f"{doc_id}::rule::{page or 0:04d}::{i:04d}"
+        csum = _checksum(text, source=source, page=page, extra={"kind": "policy_rule", "i": i})
+        out.append({
+            "chunk_id": cid,
+            "chunk_text": text,
+            "checksum": csum,
+            **meta,
+        })
+    return out
+
+# -----------------------------
+# Table → cell-level chunks
+# -----------------------------
+
+def _normalize_header(h: str) -> str:
+    return re.sub(r"\s+", " ", (h or "").strip())
+
+def _cell_chunk_text(table_title: Optional[str], row_kv: Dict[str, Any], col_name: str, row_idx: int) -> str:
+    row_keys = [k for k in row_kv.keys() if k.lower() in ("gol.", "gol", "grade", "id", "kode", "keterangan", "level", "kategori")]
+    row_ident = None
+    for k in row_keys:
+        v = str(row_kv.get(k, "")).strip()
+        if v:
+            row_ident = f"{k}={v}"
+            break
+    if not row_ident:
+        for k, v in row_kv.items():
+            if str(v).strip():
+                row_ident = f"{k}={v}"
+                break
+    title = f"{table_title} — " if table_title else ""
+    value = str(row_kv.get(col_name, "")).strip()
+    return f"{title}Row[{row_ident or row_idx}] • Col[{col_name}] ⇒ {value}"
+
+def _guess_id_column(rows: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    Universal ID-column guesser:
+      - choose the column with the highest uniqueness ratio
+      - break ties by: fewer empty values, then leftmost order in the first row
+    Works for 'Gol.', 'ID', 'Code', 'Name', etc. without hardcoding.
+    """
+    if not rows:
+        return None
+    cols = list(rows[0].keys())
+    n = len(rows)
+    best: Tuple[float, int, str] = (-1.0, 10**9, "")  # (unique_ratio, empties, colname)
+    for ci, c in enumerate(cols):
+        vals = [str(r.get(c, "")).strip() for r in rows]
+        empties = sum(1 for v in vals if not v)
+        uniq = len(set(v for v in vals if v))
+        unique_ratio = (uniq / max(n - empties, 1))
+        score = (unique_ratio, -empties, -ci)  # maximize unique_ratio, minimize empties, prefer leftmost
+        if (unique_ratio, empties, ci) > (best[0], -best[1], -best[2] if isinstance(best[2], int) else 0):
+            best = (unique_ratio, empties, c)
+    # small sanity: if uniqueness is extremely low, skip and let row index be the id
+    return best[2] if isinstance(best[2], str) and best[0] >= 0.4 else None
+
+def _row_is_constant(row: Dict[str, Any], id_col: Optional[str]) -> Optional[str]:
+    """
+    If all non-ID non-empty values in the row are the same string, return that text (to collapse).
+    """
+    vals = []
+    for k, v in row.items():
+        if id_col and k == id_col:
+            continue
+        s = str(v or "").strip()
+        if s:
+            vals.append(s)
+    if not vals:
+        return None
+    return vals[0] if all(s == vals[0] for s in vals) else None
+
+
+def _row_summary_text(title: Optional[str], id_label: str, id_val: str,
+                      row: Dict[str, Any], id_col: Optional[str],
+                      max_cols: int = 8) -> str:
+    """
+    Compact one-liner summary per row: "Title — IDLABEL=IDVAL — col1=val1; col2=val2; ..."
+    Limits to max_cols for readability (adds “… +N more” if truncated).
+    """
+    prefix = f"{title} — " if title else ""
+    parts = []
+    shown = 0
+    for k, v in row.items():
+        if id_col and k == id_col:
+            continue
+        s = str(v or "").strip()
+        if not s:
+            continue
+        parts.append(f"{_normalize_header(k)}={s}")
+        shown += 1
+        if shown >= max_cols:
+            break
+    remaining = sum(1 for k, v in row.items() if (not id_col or k != id_col) and str(v or "").strip()) - shown
+    tail = f"; +{remaining} more" if remaining > 0 else ""
+    return f"{prefix}{id_label} {id_val} — " + ("; ".join(parts) + tail if parts else "(empty)")
+
+def table_cells_to_chunks(
+    table_dict_rows: List[Dict[str, Any]],
+    doc_id: str,
+    source: str,
+    page: int,
+    table_index: int,
+    table_title: Optional[str] = None,
+    *,
+    id_col: Optional[str] = None,
+    emit_row_summary: bool = True,
+    emit_cell_chunks: bool = True,
+    collapse_constant_rows: bool = True,
+    max_summary_cols: int = 8,
+) -> List[Dict[str, Any]]:
+    """
+    Universal, minimal-assumption table chunking:
+      - infers an ID column (or use the provided id_col)
+      - emits ONE row summary chunk per row (optional)
+      - collapses rows where all non-ID values are identical (optional)
+      - emits per-cell chunks for non-empty, non-ID cells (optional)
+      - keeps metadata small & compatible with your Milvus schema
+    """
+    out: List[Dict[str, Any]] = []
+    if not table_dict_rows:
+        return out
+
+    # ID column: use provided or infer
+    _id_col = id_col or _guess_id_column(table_dict_rows)
+    table_id = f"{doc_id}::table::{page:04d}::{table_index:03d}"
+
+    for r_idx, row in enumerate(table_dict_rows):
+        id_label = _normalize_header(_id_col) if _id_col else "Row"
+        id_val = str(row.get(_id_col, r_idx)) if _id_col else str(r_idx)
+        row_id = f"{table_id}::row::{r_idx:04d}"
+
+        # 1) Row-constant collapse (e.g., "Sesuai tagihan, ...")
+        if collapse_constant_rows:
+            const_text = _row_is_constant(row, _id_col)
+            if const_text:
+                # constant chunk
+                txt = f"{table_title+' — ' if table_title else ''}{id_label} {id_val} — {const_text}"
+                cid = f"{row_id}::constant"
+                csum = _checksum(txt, source=source, page=page, extra={"table": table_id, "row": r_idx, "kind": "row_constant"})
+                out.append({
                     "chunk_id": cid,
+                    "chunk_text": txt,
+                    "checksum": csum,
                     "source": source,
-                    "page": page_num,
-                    "element_type": "narrative",
-                    "table_id": None,
-                    "row_id": None,
+                    "page": page,
+                    "element_type": "table_row_constant",
+                    "table_id": table_id,
+                    "row_id": row_id,
+                    "col_name": None,
+                    "breadcrumb": table_title or "",
                     "list_id": None,
-                    "bbox": None,
-                    "language": language,
-                    "chunk_text": piece,
-                    "checksum": checksum,
-                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                }
-                all_chunks.append(meta)
-
-        # 2) Tables -> row level chunks (handle nested / different shapes)
-        tables = page.get("tables") or []
-        for t in tables:
-            table_index = t.get("table_index")
-            bbox = t.get("bbox")
-            table_id = f"{source}_p{page_num}_t{table_index}"
-            table_dct = t.get("table_dct") or []
-
-            # If it's a list of dict rows (most common), handle row-by-row
-            if isinstance(table_dct, list) and table_dct and all(isinstance(r, dict) for r in table_dct):
-                for ridx, row in enumerate(table_dct):
-                    text = row_dict_to_text(row)
-                    cid = uuid.uuid4().hex
-                    checksum = sha256_checksum(canonicalize_text(text))
-                    meta = {
-                        "chunk_id": cid,
+                })
+                # optional row summary
+                if emit_row_summary:
+                    rs = _row_summary_text(table_title, id_label, id_val, row, _id_col, max_cols=max_summary_cols)
+                    rcid = f"{row_id}::summary"
+                    rcsum = _checksum(rs, source=source, page=page, extra={"table": table_id, "row": r_idx, "kind": "row_summary"})
+                    out.append({
+                        "chunk_id": rcid,
+                        "chunk_text": rs,
+                        "checksum": rcsum,
                         "source": source,
-                        "page": page_num,
+                        "page": page,
                         "element_type": "table_row",
                         "table_id": table_id,
-                        "table_index": table_index,
-                        "row_id": ridx,
+                        "row_id": row_id,
+                        "col_name": None,
+                        "breadcrumb": table_title or "",
                         "list_id": None,
-                        "bbox": bbox,
-                        "language": language,
-                        "chunk_text": text,
-                        "checksum": checksum,
-                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                    }
-                    all_chunks.append(meta)
+                    })
+                continue  # skip per-cell chunks for constant rows
 
-            else:
-                # Generic fallback: table_dct might be nested like your example.
-                # Flatten reasonable nested patterns into readable text rows.
-                # If table_dct is list but not list-of-dicts, attempt to extract inner dict lists.
-                if isinstance(table_dct, list) and table_dct:
-                    # try to find inner lists of dicts
-                    found = False
-                    for item in table_dct:
-                        if isinstance(item, dict):
-                            for v in item.values():
-                                if isinstance(v, list) and all(isinstance(x, dict) for x in v):
-                                    # treat each inner dict as a row
-                                    for ridx, row in enumerate(v):
-                                        text = row_dict_to_text(row)
-                                        cid = uuid.uuid4().hex
-                                        checksum = sha256_checksum(canonicalize_text(text))
-                                        meta = {
-                                            "chunk_id": cid,
-                                            "source": source,
-                                            "page": page_num,
-                                            "element_type": "table_row",
-                                            "table_id": table_id,
-                                            "table_index": table_index,
-                                            "row_id": ridx,
-                                            "list_id": None,
-                                            "bbox": bbox,
-                                            "language": language,
-                                            "chunk_text": text,
-                                            "checksum": checksum,
-                                            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                                        }
-                                        all_chunks.append(meta)
-                                    found = True
-                                    break
-                        if found:
-                            break
-                    if not found:
-                        # fallback: represent the table as a single textual chunk (serialized)
-                        text = canonicalize_text(repr(table_dct))
-                        cid = uuid.uuid4().hex
-                        checksum = sha256_checksum(text)
-                        meta = {
-                            "chunk_id": cid,
-                            "source": source,
-                            "page": page_num,
-                            "element_type": "table_text",
-                            "table_id": table_id,
-                            "table_index": table_index,
-                            "row_id": None,
-                            "list_id": None,
-                            "bbox": bbox,
-                            "language": language,
-                            "chunk_text": text,
-                            "checksum": checksum,
-                            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                        }
-                        all_chunks.append(meta)
-                else:
-                    # empty or unknown format -> skip or keep a representation
+        # 2) Row summary (compact recall anchor)
+        if emit_row_summary:
+            rs = _row_summary_text(table_title, id_label, id_val, row, _id_col, max_cols=max_summary_cols)
+            rcid = f"{row_id}::summary"
+            rcsum = _checksum(rs, source=source, page=page, extra={"table": table_id, "row": r_idx, "kind": "row_summary"})
+            out.append({
+                "chunk_id": rcid,
+                "chunk_text": rs,
+                "checksum": rcsum,
+                "source": source,
+                "page": page,
+                "element_type": "table_row",
+                "table_id": table_id,
+                "row_id": row_id,
+                "col_name": None,
+                "breadcrumb": table_title or "",
+                "list_id": None,
+            })
+
+        # 3) Per-cell chunks (non-ID, non-empty)
+        if emit_cell_chunks:
+            c_idx = -1
+            for k, v in row.items():
+                c_idx += 1
+                if _id_col and k == _id_col:
                     continue
+                s = str(v or "").strip()
+                if not s:
+                    continue
+                col_name = _normalize_header(k)
+                txt = f"{table_title+' — ' if table_title else ''}{id_label} {id_val} • {col_name}: {s}"
+                cid = f"{row_id}::cell::{c_idx:03d}"
+                csum = _checksum(txt, source=source, page=page, extra={"table": table_id, "row": r_idx, "col": col_name})
+                # optional numeric value (tiny, helpful for range filters)
+                val_num = _to_number(s)
 
-    return all_chunks
+                out.append({
+                    "chunk_id": cid,
+                    "chunk_text": txt,
+                    "checksum": csum,
+                    "source": source,
+                    "page": page,
+                    "element_type": "table_cell",
+                    "table_id": table_id,
+                    "row_id": row_id,
+                    "col_name": col_name,
+                    "breadcrumb": table_title or "",
+                    "list_id": None,
+                    # minimal, universal extra for numeric range queries
+                    "value_num": val_num,
+                })
+
+    return out
+
+# -----------------------------
+# Page-level builder (with section carry)
+# -----------------------------
+
+def build_chunks_from_pages(
+    pages: List[Dict[str, Any]],
+    doc_id: str,
+    source: str,
+    embeddings_for_semantic,               # embeddings instance for grouping & optional fallback
+    enable_semantic_fallback: bool = True,
+    semantic_fallback_max_chars: int = 1000,
+    sim_threshold: float = 0.82,
+    use_percentile: bool = False,
+    percentile: int = 90,
+) -> List[Dict[str, Any]]:
+    """
+    pages: list of dicts like:
+      {'page': int, 'narrative_text': str, 'tables': [{'table_index': int, 'table_dct': [ {col:val}, ... ]}, ...]}
+
+    Behavior:
+      - Carry last seen ALL-CAPS header across pages (no '/pagebreak' markers).
+      - Narrative → nodes → semantic grouping → (optional) length fallback → policy_rule chunks.
+      - Tables → cell-level chunks (one chunk per cell).
+    """
+    built: List[Dict[str, Any]] = []
+    section_carry: Optional[str] = None
+    pages_sorted = sorted(pages, key=lambda p: (p.get("page") is None, p.get("page")))
+
+    for pg in pages_sorted:
+        page_no = pg.get("page")
+        nar = (pg.get("narrative_text") or "").strip()
+        tables = pg.get("tables") or []
+
+        # detect this page header (if any)
+        section_hint = section_carry
+        if nar:
+            first_line = ""
+            for raw in nar.splitlines():
+                raw = raw.strip()
+                if raw:
+                    first_line = raw
+                    break
+            if first_line and _is_header(_clean_line(first_line)):
+                section_hint = _clean_line(first_line).title()
+
+        # 1) Narrative → atomic rules
+        if nar:
+            nodes = parse_policy_to_nodes(nar, section_hint=section_hint)
+
+            # track carry-over header
+            for n in nodes:
+                if n.get("kind") == "header":
+                    section_carry = n.get("line") or section_carry
+            if section_carry is None and section_hint:
+                section_carry = section_hint
+
+            rules = group_atomic_rules_semantic(
+                nodes,
+                embeddings=embeddings_for_semantic,
+                sim_threshold=sim_threshold,
+                use_percentile=use_percentile,
+                percentile=percentile
+            )
+            rules = semantic_refine_rules(
+                rules,
+                embeddings=embeddings_for_semantic,
+                enable=enable_semantic_fallback,
+                max_chars=semantic_fallback_max_chars,
+                breakpoint_threshold_type="percentile",
+                breakpoint_threshold_amount=95,
+            )
+            built.extend(atomic_rules_to_chunks(rules, doc_id=doc_id, source=source, page=page_no))
+
+        # 2) Tables → cell chunks
+        for t in tables:
+            t_idx = t.get("table_index", 0)
+            rows = t.get("table_dct")
+            if isinstance(rows, dict) and "table_dct" in rows:
+                rows = rows["table_dct"]
+            if not isinstance(rows, list):
+                continue
+
+            table_title = section_carry
+            cell_chunks = table_cells_to_chunks(
+                table_dict_rows=rows,
+                doc_id=doc_id,
+                source=source,
+                page=page_no if page_no is not None else -1,
+                table_index=t_idx,
+                table_title=table_title,
+            )
+            built.extend(cell_chunks)
+
+    return built

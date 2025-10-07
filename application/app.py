@@ -12,7 +12,7 @@ from schemas.api import CreateSessionResp, ChatReq, ChatResp
 from schemas.rag_outputs import AnswerWithSources, format_docs_with_metadata
 
 from config import (REDIS_URL, SESSION_TTL_SECONDS, MAX_HISTORY_MESSAGES, 
-                    gemini_chat_model, api_key_name, qa_system_prompt
+                    gemini_chat_model, google_api_key_name, qa_system_prompt
 )
 from vectorstore.milvus_vectorstore import get_vectorstore
 
@@ -66,7 +66,7 @@ def chat(req: ChatReq):
     # sanitized_retriever = SanitizingRetriever(retriever)
 
     # 4) Build the LLM client (safe fetch of API key)
-    api_key_value = os.environ.get(api_key_name)  # ensure `api_key_name` is the env var name string from config
+    api_key_value = os.environ.get(google_api_key_name)  # ensure `google_api_key_name` is the env var name string from config
     llm = ChatGoogleGenerativeAI(model=gemini_chat_model, google_api_key=api_key_value)
 
     # 5) Build the prompt — USE a plain string {history} placeholder (avoid MessagesPlaceholder)

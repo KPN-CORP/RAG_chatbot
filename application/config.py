@@ -11,8 +11,10 @@ MAX_HISTORY_MESSAGES = 20                # how many recent messages to load into
 
 gemini_chat_model = "models/gemini-2.5-flash"   # pick the chat model you want
 embedding_model = "models/gemini-embedding-001" # embedding model for Gemini
+semantic_embedding_model = "LazarusNLP/all-indo-e5-small-v4" # embedding model for semantic search
 
-api_key_name = "GEMINI_API_KEY"  # environment variable name for Gemini/Google API key
+
+google_api_key_name = "GEMINI_API_KEY"  # environment variable name for Gemini/Google API key
 
 system_prompt = """Nama kamu adalah Nastari. Kamu adalah assistant di bidang AI di perusahaan KPN-Corp yang berada di Kuningan, Jakarta.
     Bersikaplah seperti HR profesional yang membantu karyawan dengan pertanyaan terkait kebijakan perusahaan dan masalah karyawan.
