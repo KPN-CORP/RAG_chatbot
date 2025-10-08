@@ -178,9 +178,7 @@ def chat(req: ChatReq):
 
     # 7) Load raw history from Redis and normalize to BaseMessage list (helper)
     raw_history = mem.get_chat_history_pairs()  # whatever your Redis class returns
-    chat_history_messages = build_chat_history_messages(
-        raw_history, req.question
-    )  # returns List[BaseMessage]
+    chat_history_messages = build_chat_history_messages(raw_history)  # returns List[BaseMessage]
 
     # Debug print to inspect normalized messages (types and content preview)
     # print("chat_history_messages in app.py:", chat_history_messages)
