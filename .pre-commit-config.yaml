@@ -8,6 +8,7 @@ repos:
         entry: ruff
         args: ["check", "--fix"]
         language: system
+        files: ^application/
         types: [python]          # <- critical: only *.py
         exclude: '\.ipynb$'      # extra belt-and-suspenders
 
@@ -16,6 +17,7 @@ repos:
         entry: isort
         args: ["--profile=black"]
         language: system
+        files: ^application/
         types: [python]
         exclude: '\.ipynb$'
 
@@ -24,6 +26,7 @@ repos:
         entry: black
         args: ["-l", "100"]
         language: system
+        files: ^application/
         types: [python]
         exclude: '\.ipynb$'
 
@@ -35,7 +38,11 @@ repos:
           - -c
           - |
             import subprocess, sys, pathlib
-            out = subprocess.run([sys.executable, "-m", "vulture", "."], capture_output=True, text=True)
+            out = subprocess.run(
+                [sys.executable, "-m", "vulture", "application"],
+                capture_output=True,
+                text=True,
+            )
             pathlib.Path("application/dead_code_report.txt").write_text(out.stdout, encoding="utf-8")
             print(out.stdout, end=""); sys.exit(0)
         language: system
