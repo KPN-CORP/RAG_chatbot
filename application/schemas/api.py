@@ -22,6 +22,7 @@ class ChatReq(BaseModel):
     question: str
     debug_retrieval: bool = False
 
+
 class ChatResp(BaseModel):
     """Response body for the main chat endpoint."""
 

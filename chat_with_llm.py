@@ -1,16 +1,14 @@
 # rag_gemini_milvus_chat.py
 import os
-import time
+from typing import Dict, List
+
 import google.generativeai as genai
-from typing import List, Dict
+from langchain.chains import ConversationalRetrievalChain
+from langchain.embeddings.base import Embeddings
 
 # LangChain core
-from langchain.schema import HumanMessage, AIMessage, SystemMessage
 from langchain.llms.base import LLM
-from langchain.embeddings.base import Embeddings
-from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
-from langchain.docstore.document import Document
 
 # Vectorstore (Milvus) wrappers - try common package names
 try:
@@ -22,10 +20,11 @@ except Exception:
     except Exception:
         LangchainMilvus = None
 
-# SQLAlchemy for simple history persistence
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime
-from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
+
+# SQLAlchemy for simple history persistence
+from sqlalchemy import Column, DateTime, Integer, String, Text, create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 ############################
 # CONFIG
@@ -39,7 +38,7 @@ if not GOOGLE_API_KEY:
 genai.configure(api_key=GOOGLE_API_KEY)
 
 # Gemini models
-GEMINI_LLM_MODEL = "gemini-2.5-flash"         # choose appropriate model
+GEMINI_LLM_MODEL = "gemini-2.5-flash"  # choose appropriate model
 GEMINI_EMBEDDING_MODEL = "models/embedding-001"
 
 # Milvus connection args (local Docker / Milvus Lite default)
@@ -54,6 +53,7 @@ HISTORY_DB_URL = "sqlite:///chat_history.db"
 ############################
 Base = declarative_base()
 
+
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -62,27 +62,41 @@ class ChatMessage(Base):
     content = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
 engine = create_engine(HISTORY_DB_URL, connect_args={"check_same_thread": False})
 Base.metadata.create_all(engine)
 SessionLocal = sessionmaker(bind=engine)
 
+
 def save_message(session_id: str, role: str, content: str):
     db = SessionLocal()
-    msg = ChatMessage(session_id=session_id, role=role, content=content, created_at=datetime.utcnow())
-    db.add(msg); db.commit(); db.close()
+    msg = ChatMessage(
+        session_id=session_id, role=role, content=content, created_at=datetime.utcnow()
+    )
+    db.add(msg)
+    db.commit()
+    db.close()
+
 
 def load_messages(session_id: str) -> List[Dict]:
     db = SessionLocal()
-    rows = db.query(ChatMessage).filter_by(session_id=session_id).order_by(ChatMessage.created_at).all()
+    rows = (
+        db.query(ChatMessage)
+        .filter_by(session_id=session_id)
+        .order_by(ChatMessage.created_at)
+        .all()
+    )
     out = [{"role": r.role, "content": r.content, "created_at": r.created_at} for r in rows]
     db.close()
     return out
+
 
 ############################
 # LANGCHAIN LLM & EMBEDDINGS WRAPPERS (calls google.generativeai)
 ############################
 class GeminiLangChainLLM(LLM):
     """LangChain LLM wrapper that calls google.generativeai (Gemini)."""
+
     # max_output_tokens = None  # optional
 
     def _call(self, prompt: str, stop: List[str] = None) -> str:
@@ -102,8 +116,10 @@ class GeminiLangChainLLM(LLM):
     def _llm_type(self):
         return "gemini"
 
+
 class GeminiLangChainEmbeddings(Embeddings):
     """LangChain embeddings wrapper around google.generativeai embed_content"""
+
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         # genai.embed_content may return a nested structure; adapt if needed.
         resp = genai.embed_content(model=GEMINI_EMBEDDING_MODEL, content=texts)
@@ -122,18 +138,23 @@ class GeminiLangChainEmbeddings(Embeddings):
                     raise RuntimeError("Unexpected embed response item format: " + str(item)[:200])
         else:
             # last fallback: try resp['predictions'] etc.
-            raise RuntimeError(f"Unexpected embedding response format: {type(resp)} - inspect and adapt.")
+            raise RuntimeError(
+                f"Unexpected embedding response format: {type(resp)} - inspect and adapt."
+            )
         return vectors
 
     def embed_query(self, text: str) -> List[float]:
         vecs = self.embed_documents([text])
         return vecs[0]
 
+
 ############################
 # CONNECT / LOAD MILVUS via LangChain wrapper
 ############################
 if LangchainMilvus is None:
-    raise RuntimeError("Could not import LangChain Milvus wrapper. Install langchain-milvus or adjust imports.")
+    raise RuntimeError(
+        "Could not import LangChain Milvus wrapper. Install langchain-milvus or adjust imports."
+    )
 
 # Create embedding object for LangChain wrapper
 embeddings = GeminiLangChainEmbeddings()
@@ -144,11 +165,12 @@ embeddings = GeminiLangChainEmbeddings()
 vectorstore = LangchainMilvus(
     collection_name=MILVUS_COLLECTION,
     embedding_function=embeddings,
-    connection_args=MILVUS_CONN
+    connection_args=MILVUS_CONN,
 )
 
 # Build a retriever from the vectorstore
 retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+
 
 ############################
 # Prepare memory (load persisted history and convert to LangChain messages)
@@ -170,6 +192,7 @@ def build_memory_from_db(session_id: str) -> ConversationBufferMemory:
             memory.chat_memory.add_system_message(content)
     return memory
 
+
 ############################
 # Create conversational chain factory
 ############################
@@ -183,6 +206,7 @@ def create_conv_chain(session_id: str) -> ConversationalRetrievalChain:
         return_source_documents=True,  # helpful for provenance
     )
     return chain
+
 
 ############################
 # Chat function (single turn)
@@ -206,6 +230,7 @@ def chat(session_id: str, user_text: str) -> Dict:
     # 6) Return answer plus sources for debugging/provenance
     return {"answer": answer, "sources": result.get("source_documents", [])}
 
+
 ############################
 # Simple interactive REPL for local testing
 ############################
@@ -224,4 +249,9 @@ if __name__ == "__main__":
             for s in out["sources"][:3]:
                 # each source is a langchain Document with .page_content and .metadata
                 meta = getattr(s, "metadata", {})
-                print("-", (meta.get("source") or meta.get("source_id") or ""), ":", (s.page_content[:200] + ("..." if len(s.page_content) > 200 else "")))
+                print(
+                    "-",
+                    (meta.get("source") or meta.get("source_id") or ""),
+                    ":",
+                    (s.page_content[:200] + ("..." if len(s.page_content) > 200 else "")),
+                )

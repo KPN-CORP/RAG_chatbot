@@ -11,14 +11,10 @@ MAX_HISTORY_MESSAGES = 20  # how many recent messages to load into memory
 
 gemini_chat_model = "models/gemini-2.5-flash"  # pick the chat model you want
 embedding_model = "models/gemini-embedding-001"  # embedding model for Gemini
-semantic_embedding_model = (
-    "LazarusNLP/all-indo-e5-small-v4"  # embedding model for semantic search
-)
+semantic_embedding_model = "LazarusNLP/all-indo-e5-small-v4"  # embedding model for semantic search
 
 
-google_api_key_name = (
-    "GEMINI_API_KEY"  # environment variable name for Gemini/Google API key
-)
+google_api_key_name = "GEMINI_API_KEY"  # environment variable name for Gemini/Google API key
 
 contextualize_prompt = """Nama kamu adalah Nastari. Kamu adalah asisten AI di bidang HR di perusahaan KPN-Corp. 
 Tugasmu adalah membantu membuat ulang pertanyaan karyawan menjadi bentuk yang jelas dan berdiri sendiri. 

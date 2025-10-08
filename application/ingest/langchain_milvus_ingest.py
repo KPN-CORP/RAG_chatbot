@@ -14,6 +14,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from congig import google_api_key_name
 
+# Chunking
+from ingest.chunking import build_chunks_from_pages
+
+# Embeddings (Gemini via LangChain)
+from models.embbedings import get_gemini_embeddings
+
 # Milvus
 from pymilvus import (
     Collection,
@@ -23,12 +29,6 @@ from pymilvus import (
     connections,
     utility,
 )
-
-# Chunking
-from ingest.chunking import build_chunks_from_pages
-
-# Embeddings (Gemini via LangChain)
-from models.embbedings import get_gemini_embeddings
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -88,16 +88,12 @@ def ensure_collection_exists_with_schema(
             "params": {"M": 16, "efConstruction": 200},
         }
     if dry_run:
-        log.info(
-            "[dry_run] Would ensure collection '%s' (dim=%d)", collection_name, dim
-        )
+        log.info("[dry_run] Would ensure collection '%s' (dim=%d)", collection_name, dim)
         return None
     connections.connect(alias="default", host=host, port=port)
     if utility.has_collection(collection_name):
         coll = Collection(collection_name)
-        vec_field = next(
-            (f for f in coll.schema.fields if f.dtype == DataType.FLOAT_VECTOR), None
-        )
+        vec_field = next((f for f in coll.schema.fields if f.dtype == DataType.FLOAT_VECTOR), None)
         if vec_field and vec_field.dim != dim:
             raise RuntimeError(
                 f"Existing collection '{collection_name}' dim {vec_field.dim} != expected {dim}"
@@ -112,9 +108,7 @@ def ensure_collection_exists_with_schema(
         FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
         FieldSchema(name="metadata", dtype=DataType.JSON),
     ]
-    schema = CollectionSchema(
-        fields, description="RAG KB - chunks with Gemini embeddings"
-    )
+    schema = CollectionSchema(fields, description="RAG KB - chunks with Gemini embeddings")
     coll = Collection(name=collection_name, schema=schema)
     coll.create_index(field_name="embedding", index_params=index_params)
     coll.load()
@@ -189,9 +183,7 @@ def embed_batch_texts(
 ) -> List[List[float]]:
     if dry_run:
         dim = 1536
-        return [
-            [0.001 * ((i + 1) % 10) for _ in range(dim)] for i, _ in enumerate(texts)
-        ]
+        return [[0.001 * ((i + 1) % 10) for _ in range(dim)] for i, _ in enumerate(texts)]
 
     emb = get_gemini_embeddings(model, google_api_key_name)
     out: List[List[float]] = []
@@ -223,9 +215,7 @@ def store_chunks_to_milvus(
     Dedupe by checksum → batch-embed → ensure schema → insert.
     Returns (skipped, inserted).
     """
-    api_key = (
-        api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    )
+    api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key and not dry_run:
         log.warning("No GEMINI_API_KEY/GOOGLE_API_KEY set (embedding may fail).")
 
@@ -238,9 +228,7 @@ def store_chunks_to_milvus(
     coll_exists = False
     try:
         if not dry_run:
-            connections.connect(
-                alias="default", host=milvus_host, port=str(milvus_port)
-            )
+            connections.connect(alias="default", host=milvus_host, port=str(milvus_port))
             coll_exists = utility.has_collection(collection_name)
     except Exception as e:
         log.warning("Milvus connection check failed: %s", e)
@@ -302,9 +290,7 @@ def store_chunks_to_milvus(
                 dry_run=dry_run,
             )
 
-        insert_with_pymilvus(
-            coll_obj, ids, vectors, checksums, texts, metadatas, dry_run=dry_run
-        )
+        insert_with_pymilvus(coll_obj, ids, vectors, checksums, texts, metadatas, dry_run=dry_run)
         inserted += len(ids)
         i += insert_batch_size
 

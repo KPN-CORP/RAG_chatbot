@@ -39,9 +39,7 @@ def get_page_elements(pdf_path):
                 tables.append({"table_index": t_idx, "bbox": tbbox, "rows": rows})
 
             # 2) extract words with bboxes and filter out words that fall into any table bbox
-            words = (
-                page.extract_words()
-            )  # each item has x0, x1, top (y0), bottom (y1), text
+            words = page.extract_words()  # each item has x0, x1, top (y0), bottom (y1), text
             narrative_words = []
             for w in words:
                 wbox = (
@@ -128,8 +126,7 @@ def get_all_tables(pdf_pages: Iterable[dict]) -> Tuple[List[Any], List[str]]:
             # build flattened text efficiently using join() (linear time)
             # convert None -> '' but keep falsy numerics (0) as '0'
             flat = "\n".join(
-                " ".join(("" if cell is None else str(cell)) for cell in row)
-                for row in td
+                " ".join(("" if cell is None else str(cell)) for cell in row) for row in td
             )
             flat = re.sub(r"\s+", " ", flat)
 
@@ -322,9 +319,7 @@ def process_triple_header_table(table_data):
 
         # Build the final header by joining the parts that are not empty
         parts = [part for part in [h1, h2, h3] if part]
-        unique_parts = list(
-            dict.fromkeys(parts)
-        )  # Remove duplicates like 'Gol.' - 'Gol.'
+        unique_parts = list(dict.fromkeys(parts))  # Remove duplicates like 'Gol.' - 'Gol.'
         final_header = " - ".join(unique_parts)
         flattened_headers.append(final_header)
 
@@ -363,9 +358,7 @@ def change_table_format(pdf_pages):
                 if dct["table_dct"]:
                     is_double_header = check_double_header(dct["table_dct"])
                     is_triple_header = (
-                        check_triple_header(dct["table_dct"])
-                        if is_double_header
-                        else False
+                        check_triple_header(dct["table_dct"]) if is_double_header else False
                     )
 
                     table = clean_table(dct["table_dct"])

@@ -4,13 +4,6 @@ import os
 import uuid
 
 import redis
-from fastapi import FastAPI, HTTPException
-from langchain.output_parsers import PydanticOutputParser
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-
-# LangChain imports (use provider wrapper)
-from langchain_google_genai import ChatGoogleGenerativeAI
-
 from config import (
     MAX_HISTORY_MESSAGES,
     REDIS_URL,
@@ -19,6 +12,12 @@ from config import (
     google_api_key_name,
     qa_system_prompt,
 )
+from fastapi import FastAPI, HTTPException
+from langchain.output_parsers import PydanticOutputParser
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+
+# LangChain imports (use provider wrapper)
+from langchain_google_genai import ChatGoogleGenerativeAI
 from logging_config import configure_logging, get_logger
 from modules.history_utils import build_chat_history_messages
 from modules.redis import RedisConversationMemory
@@ -58,9 +57,7 @@ def create_session():
     """Create a new chat session backed by Redis."""
 
     sid = str(uuid.uuid4())
-    r.hset(
-        _session_meta_key(sid), mapping={"created_at": str(__import__("time").time())}
-    )
+    r.hset(_session_meta_key(sid), mapping={"created_at": str(__import__("time").time())})
     r.expire(_session_meta_key(sid), SESSION_TTL_SECONDS)
     logger.info("Created new chat session", extra={"session_id": sid})
     return {"session_id": sid}
@@ -77,22 +74,14 @@ def chat(req: ChatReq):
         logger.error("Vectorstore is not initialised")
         raise HTTPException(status_code=500, detail="Vectorstore not wired in server.")
     if not session_exists(req.session_id):
-        logger.warning(
-            "Chat request for unknown session", extra={"session_id": req.session_id}
-        )
-        raise HTTPException(
-            status_code=404, detail="Session not found. Create a session first."
-        )
+        logger.warning("Chat request for unknown session", extra={"session_id": req.session_id})
+        raise HTTPException(status_code=404, detail="Session not found. Create a session first.")
 
     # 2) Create session-scoped memory helper (Redis)
-    mem = RedisConversationMemory(
-        session_id=req.session_id, max_messages=MAX_HISTORY_MESSAGES
-    )
+    mem = RedisConversationMemory(session_id=req.session_id, max_messages=MAX_HISTORY_MESSAGES)
 
     # 3) Build retriever from vectorstore (and optionally wrap with a sanitizer)
-    retriever = vectorstore.as_retriever(
-        search_type="similarity", search_kwargs={"k": 6}
-    )
+    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})
     # If you have a safe SanitizingRetriever (no LLM calls inside), use it; otherwise keep the plain retriever:
     # sanitized_retriever = SanitizingRetriever(retriever)
 
@@ -106,12 +95,8 @@ def chat(req: ChatReq):
         try:
             retrieved_docs = retriever.invoke(req.question) or []
         except Exception:
-            logger.exception(
-                "Failed to retrieve documents", extra={"session_id": req.session_id}
-            )
-            raise HTTPException(
-                status_code=500, detail="Retriever error while fetching documents."
-            )
+            logger.exception("Failed to retrieve documents", extra={"session_id": req.session_id})
+            raise HTTPException(status_code=500, detail="Retriever error while fetching documents.")
 
         # Prepare the formatted context string once so the chain does not need to
         # re-run document formatting internally.
@@ -133,9 +118,7 @@ def chat(req: ChatReq):
     qa_prompt = ChatPromptTemplate.from_messages(
         [
             ("system", qa_system_prompt),
-            MessagesPlaceholder(
-                variable_name="chat_history"
-            ),  # inject conversation history here
+            MessagesPlaceholder(variable_name="chat_history"),  # inject conversation history here
             # ("system", "Use the following extracted documents to answer the user's question:\n\n{context}"),
             ("human", "{question}"),
         ]
@@ -147,12 +130,10 @@ def chat(req: ChatReq):
             {
                 # The retrieved docs are pre-fetched and formatted to a context string above.
                 "context": (lambda x: x["context"]),
-
                 # The original 'question' is passed through unchanged.
                 "question": (lambda x: x["question"]),
-
                 # The 'chat_history' is passed through unchanged.
-                "chat_history": (lambda x: x["chat_history"])
+                "chat_history": (lambda x: x["chat_history"]),
             }
             | qa_prompt
             | llm
@@ -164,12 +145,10 @@ def chat(req: ChatReq):
                 # The retriever runs first, using the original question.
                 # Its output is passed to format_docs and becomes the 'context'.
                 "context": (lambda x: x["question"]) | retriever | format_docs_with_metadata,
-
                 # The original 'question' is passed through unchanged.
                 "question": (lambda x: x["question"]),
-
                 # The 'chat_history' is passed through unchanged.
-                "chat_history": (lambda x: x["chat_history"])
+                "chat_history": (lambda x: x["chat_history"]),
             }
             | qa_prompt
             | llm

@@ -30,9 +30,7 @@ __all__ = [
 # -----------------------------
 
 
-def parse_policy_to_nodes(
-    text: str, section_hint: Optional[str] = None
-) -> List[Dict[str, Any]]:
+def parse_policy_to_nodes(text: str, section_hint: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Convert raw narrative text into nodes with breadcrumb 'path' and 'kind'.
     node = {'path': ['SECTION','Subsection'], 'kind':'header'|'bullet'|'para', 'line': str}
@@ -185,12 +183,7 @@ def group_atomic_rules_semantic(
             continue
 
         # continuity check with previous item if same path and both embedded
-        if (
-            i - 1 >= 0
-            and paths[i - 1] == cur_path
-            and (i - 1) in emb_by_idx
-            and i in emb_by_idx
-        ):
+        if i - 1 >= 0 and paths[i - 1] == cur_path and (i - 1) in emb_by_idx and i in emb_by_idx:
             sim = _cosine(emb_by_idx[i - 1], emb_by_idx[i])
             if sim >= sim_threshold:
                 buf.append(txt)
@@ -261,9 +254,7 @@ def atomic_rules_to_chunks(
     out: List[Dict[str, Any]] = []
     for i, r in enumerate(rules, 1):
         breadcrumb = " > ".join(r["path"]) if r["path"] else ""
-        text = (
-            f"{breadcrumb} — {r['text']}".strip() if breadcrumb else r["text"].strip()
-        )
+        text = f"{breadcrumb} — {r['text']}".strip() if breadcrumb else r["text"].strip()
         meta = {
             "source": source,
             "page": page,
@@ -275,9 +266,7 @@ def atomic_rules_to_chunks(
             "col_name": None,
         }
         cid = f"{doc_id}::rule::{page or 0:04d}::{i:04d}"
-        csum = _checksum(
-            text, source=source, page=page, extra={"kind": "policy_rule", "i": i}
-        )
+        csum = _checksum(text, source=source, page=page, extra={"kind": "policy_rule", "i": i})
         out.append(
             {
                 "chunk_id": cid,
@@ -297,9 +286,7 @@ def table_cells_to_chunks(
     table_index: int,
     table_title: Optional[str] = None,
     *,
-    id_col: Optional[
-        str
-    ] = None,  # optional: force an ID column, else auto-pick first column
+    id_col: Optional[str] = None,  # optional: force an ID column, else auto-pick first column
     include_identifier_cell: bool = True,  # include the ID column as a cell-chunk too
 ) -> List[Dict[str, Any]]:
     """
@@ -336,7 +323,9 @@ def table_cells_to_chunks(
 
             col_name = _normalize_header(col)
             row_tag = f"Row[{id_label}={id_val}]" if _id_col else f"Row[{r_idx}]"
-            txt = f"{(table_title + ' — ') if table_title else ''}{row_tag} • Col[{col_name}] ⇒ {val}"
+            txt = (
+                f"{(table_title + ' — ') if table_title else ''}{row_tag} • Col[{col_name}] ⇒ {val}"
+            )
 
             cid = f"{row_id}::cell::{c_idx:03d}"
             csum = _checksum(
@@ -436,11 +425,7 @@ def build_chunks_from_pages(
                 breakpoint_threshold_type="percentile",
                 breakpoint_threshold_amount=95,
             )
-            built.extend(
-                atomic_rules_to_chunks(
-                    rules, doc_id=doc_id, source=source, page=page_no
-                )
-            )
+            built.extend(atomic_rules_to_chunks(rules, doc_id=doc_id, source=source, page=page_no))
 
         # 2) Tables → cell chunks
         for t in tables:

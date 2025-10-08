@@ -1,21 +1,29 @@
-import pdfplumber
 import re
-from collections import Counter, defaultdict
-from typing import List, Dict, Any, Tuple
+from collections import Counter
+from typing import Any, Dict, List, Tuple
+
+import pdfplumber
+
 
 # ----------------- Helpers -----------------
-def bbox_intersects(b1: Tuple[float,float,float,float], b2: Tuple[float,float,float,float]) -> bool:
+def bbox_intersects(
+    b1: Tuple[float, float, float, float], b2: Tuple[float, float, float, float]
+) -> bool:
     # b: (x0, y0/top, x1, y1/bottom)
     x0a, y0a, x1a, y1a = b1
     x0b, y0b, x1b, y1b = b2
     horiz = (x0a < x1b) and (x1a > x0b)
-    vert  = (y0a < y1b) and (y1a > y0b)
+    vert = (y0a < y1b) and (y1a > y0b)
     return horiz and vert
 
-_NOTE_HEADERS_RE = re.compile(r'^\s*(CATATAN|CATATAN:|NOTE|NOTES)\s*$', re.IGNORECASE)
-_HEADING_UPPER_RE = re.compile(r'^[A-Z0-9 \-\/]{1,120}$')
 
-def detect_page_header_candidate(words: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str,Any]]]:
+_NOTE_HEADERS_RE = re.compile(r"^\s*(CATATAN|CATATAN:|NOTE|NOTES)\s*$", re.IGNORECASE)
+_HEADING_UPPER_RE = re.compile(r"^[A-Z0-9 \-\/]{1,120}$")
+
+
+def detect_page_header_candidate(
+    words: List[Dict[str, Any]],
+) -> Tuple[str, List[Dict[str, Any]]]:
     """
     From extract_words() items, group into near-horizontal lines and return
     a header candidate (text) if present and the produced sorted_lines list.
@@ -37,7 +45,7 @@ def detect_page_header_candidate(words: List[Dict[str, Any]]) -> Tuple[str, List
         text = " ".join(w.get("text", "") for w in words_on_line).strip()
         # average font size (if available)
         sizes = [float(w.get("size", 0)) for w in words_on_line if w.get("size")]
-        avg_font = (sum(sizes)/len(sizes)) if sizes else None
+        avg_font = (sum(sizes) / len(sizes)) if sizes else None
         sorted_lines.append({"y": y, "text": text, "font_size": avg_font, "words": words_on_line})
 
     # top candidates: first few physical lines
@@ -45,7 +53,7 @@ def detect_page_header_candidate(words: List[Dict[str, Any]]) -> Tuple[str, List
     top_font = -1
     for ln in sorted_lines[:6]:
         txt = ln["text"]
-        if not txt or re.match(r'^\d+\s*$', txt):  # skip page numbers
+        if not txt or re.match(r"^\d+\s*$", txt):  # skip page numbers
             continue
         # prefer larger font size if given, else prefer uppercase short lines
         fs = ln.get("font_size") or 0
@@ -64,6 +72,7 @@ def detect_page_header_candidate(words: List[Dict[str, Any]]) -> Tuple[str, List
             header_text = txt
 
     return header_text, sorted_lines
+
 
 def extract_notes_from_text(text: str) -> List[Dict[str, Any]]:
     """
@@ -85,19 +94,33 @@ def extract_notes_from_text(text: str) -> List[Dict[str, Any]]:
                 if not nxt.strip():
                     break
                 # stop if next is a header-like ALLCAPS short line
-                if len(nxt.strip()) <= 120 and _HEADING_UPPER_RE.match(nxt.strip()) and sum(1 for c in nxt if c.isupper())/max(1,len(nxt.strip())) > 0.4:
+                if (
+                    len(nxt.strip()) <= 120
+                    and _HEADING_UPPER_RE.match(nxt.strip())
+                    and sum(1 for c in nxt if c.isupper()) / max(1, len(nxt.strip())) > 0.4
+                ):
                     break
                 collected.append(nxt)
                 j += 1
             note_text = "\n".join(collected).strip()
-            notes.append({"header": header, "note_text": note_text, "start_line": i, "end_line": j})
+            notes.append(
+                {
+                    "header": header,
+                    "note_text": note_text,
+                    "start_line": i,
+                    "end_line": j,
+                }
+            )
             i = j
         else:
             i += 1
     return notes
 
+
 # ----------------- Combined reader -----------------
-def get_page_elements_with_header_notes(pdf_path: str, strip_repeated_headers: bool = True) -> List[Dict[str,Any]]:
+def get_page_elements_with_header_notes(
+    pdf_path: str, strip_repeated_headers: bool = True
+) -> List[Dict[str, Any]]:
     """
     Returns pages_output: list of dicts per page:
       {
@@ -131,10 +154,20 @@ def get_page_elements_with_header_notes(pdf_path: str, strip_repeated_headers: b
                 tables.append({"table_index": t_idx, "bbox": tbbox, "rows": rows})
 
             # extract words and keep only those not inside any table bbox
-            words = page.extract_words(extra_attrs=["fontname","size","adv","top","bottom","x0","x1"]) or []
+            words = (
+                page.extract_words(
+                    extra_attrs=["fontname", "size", "adv", "top", "bottom", "x0", "x1"]
+                )
+                or []
+            )
             narrative_words = []
             for w in words:
-                wbox = (float(w.get("x0",0)), float(w.get("top",0)), float(w.get("x1",0)), float(w.get("bottom",0)))
+                wbox = (
+                    float(w.get("x0", 0)),
+                    float(w.get("top", 0)),
+                    float(w.get("x1", 0)),
+                    float(w.get("bottom", 0)),
+                )
                 in_table = any(bbox_intersects(wbox, tb["bbox"]) for tb in table_bboxes)
                 if not in_table:
                     narrative_words.append(w)
@@ -143,16 +176,23 @@ def get_page_elements_with_header_notes(pdf_path: str, strip_repeated_headers: b
             lines_map = {}
             tol = 3.0
             for w in narrative_words:
-                top = round(float(w.get("top",0)) / tol) * tol
-                lines_map.setdefault(top, []).append((float(w.get("x0",0)), w))
+                top = round(float(w.get("top", 0)) / tol) * tol
+                lines_map.setdefault(top, []).append((float(w.get("x0", 0)), w))
 
             sorted_lines = []
             for y in sorted(lines_map.keys()):
                 words_on_line = [t[1] for t in sorted(lines_map[y], key=lambda x: x[0])]
-                text = " ".join(w.get("text","") for w in words_on_line).strip()
-                sizes = [float(w.get("size",0)) for w in words_on_line if w.get("size")]
-                avg_font = (sum(sizes)/len(sizes)) if sizes else None
-                sorted_lines.append({"y": y, "text": text, "font_size": avg_font, "words": words_on_line})
+                text = " ".join(w.get("text", "") for w in words_on_line).strip()
+                sizes = [float(w.get("size", 0)) for w in words_on_line if w.get("size")]
+                avg_font = (sum(sizes) / len(sizes)) if sizes else None
+                sorted_lines.append(
+                    {
+                        "y": y,
+                        "text": text,
+                        "font_size": avg_font,
+                        "words": words_on_line,
+                    }
+                )
 
             # reconstruct narrative_text (raw; header stripping happens later optionally)
             narrative_text = "\n".join([ln["text"] for ln in sorted_lines]).strip()
@@ -163,16 +203,18 @@ def get_page_elements_with_header_notes(pdf_path: str, strip_repeated_headers: b
             # extract notes using the raw narrative_text
             notes = extract_notes_from_text(narrative_text)
 
-            per_page_data.append({
-                "page": pidx,
-                "tables": tables,
-                "table_bboxes": table_bboxes,
-                "words": narrative_words,
-                "sorted_lines": sorted_lines,
-                "raw_narrative": narrative_text,
-                "header_candidate": header_candidate,
-                "notes": notes
-            })
+            per_page_data.append(
+                {
+                    "page": pidx,
+                    "tables": tables,
+                    "table_bboxes": table_bboxes,
+                    "words": narrative_words,
+                    "sorted_lines": sorted_lines,
+                    "raw_narrative": narrative_text,
+                    "header_candidate": header_candidate,
+                    "notes": notes,
+                }
+            )
 
     # Second pass: detect repeated headers across pages
     header_counts = Counter([p["header_candidate"] for p in per_page_data if p["header_candidate"]])
@@ -198,10 +240,10 @@ def get_page_elements_with_header_notes(pdf_path: str, strip_repeated_headers: b
             # remove leading lines that exactly equal the header text (some PDFs might have slight spacing)
             new_lines = []
             header_norm = header.strip() if header else None
-            removed_any = False
+            # removed_any = False
             for idx, ln in enumerate(narrative_lines):
                 if idx < 6 and header_norm and ln.strip() and ln.strip() == header_norm:
-                    removed_any = True
+                    # removed_any = True
                     continue
                 new_lines.append(ln)
             narrative_text = "\n".join(new_lines).strip()
@@ -212,16 +254,24 @@ def get_page_elements_with_header_notes(pdf_path: str, strip_repeated_headers: b
         table_records = []
         for t in pdata["tables"]:
             table_dct = t.get("rows") if t.get("rows") else None
-            table_records.append({"table_index": t["table_index"], "bbox": t["bbox"], "table_dct": table_dct})
+            table_records.append(
+                {
+                    "table_index": t["table_index"],
+                    "bbox": t["bbox"],
+                    "table_dct": table_dct,
+                }
+            )
 
-        pages_output.append({
-            "page": pnum,
-            "narrative_text": narrative_text,
-            "tables": table_records,
-            "header_text": header,
-            "header_repeated": header_repeated,
-            "notes": pdata["notes"],
-            "lines": pdata["sorted_lines"],   # optional: useful for provenance/debugging
-        })
+        pages_output.append(
+            {
+                "page": pnum,
+                "narrative_text": narrative_text,
+                "tables": table_records,
+                "header_text": header,
+                "header_repeated": header_repeated,
+                "notes": pdata["notes"],
+                "lines": pdata["sorted_lines"],  # optional: useful for provenance/debugging
+            }
+        )
 
     return pages_output

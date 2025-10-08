@@ -23,7 +23,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable, Mapping, MutableMapping, Sequence
+from typing import Iterable, Mapping, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REPORT_PATH = PROJECT_ROOT / "application" / "dead_code_report.txt"
@@ -42,10 +42,7 @@ COMMANDS: Sequence[tuple[Sequence[str], str]] = (
             "vulture-report",
             "--all-files",
         ),
-        (
-            "Refreshing dead code report at "
-            f"{REPORT_PATH.relative_to(PROJECT_ROOT)}"
-        ),
+        ("Refreshing dead code report at " f"{REPORT_PATH.relative_to(PROJECT_ROOT)}"),
     ),
 )
 
@@ -79,10 +76,11 @@ def pre_commit_env() -> Mapping[str, str]:
     implementation.  Setting it keeps the workflow functional while leaving
     non-Windows platforms unaffected.
     """
-
-    env: MutableMapping[str, str] = os.environ.copy()
+    env = os.environ.copy()
     if sys.platform.startswith("win"):
         env.setdefault("PLATFORMDIRS_FORCE_POSIX", "1")
+        env.setdefault("PIP_CONFIG_FILE", "NUL")  # ← stop pip from scanning global config
+        env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
     return env
 
 
@@ -96,6 +94,7 @@ def run(cmd: Sequence[str], desc: str, *, env: Mapping[str, str] | None = None) 
         print(f"⚠️ Failed: {format_command(cmd)}")
         return False
     return True
+
 
 def describe_workflow(lines: Iterable[str]) -> None:
     """Print a short explanation of the configured maintenance steps."""

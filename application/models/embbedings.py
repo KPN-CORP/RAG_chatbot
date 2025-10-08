@@ -3,9 +3,8 @@
 import os
 from typing import Optional
 
-from langchain_huggingface import HuggingFaceEmbeddings
-
 from config import google_api_key_name
+from langchain_huggingface import HuggingFaceEmbeddings
 from logging_config import get_logger
 
 logger = get_logger(__name__)

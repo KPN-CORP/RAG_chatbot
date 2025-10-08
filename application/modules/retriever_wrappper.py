@@ -94,11 +94,7 @@ class SanitizingRetriever(BaseRetriever):
         """Forward unknown attributes to the wrapped retriever while avoiding recursion."""
 
         # block forwarding of internal/pydantic/serialization attributes to avoid recursion
-        if (
-            name in self._DO_NOT_FORWARD
-            or name.startswith("_")
-            or name.endswith("_json")
-        ):
+        if name in self._DO_NOT_FORWARD or name.startswith("_") or name.endswith("_json"):
             raise AttributeError(name)
         # else forward to underlying retriever
         return getattr(self._base_retriever, name)

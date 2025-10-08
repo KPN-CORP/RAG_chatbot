@@ -26,11 +26,7 @@ def _checksum(
     if page is not None:
         m.update(f"|pg:{page}".encode("utf-8"))
     if extra:
-        m.update(
-            f"|x:{json.dumps(extra, sort_keys=True, ensure_ascii=False)}".encode(
-                "utf-8"
-            )
-        )
+        m.update(f"|x:{json.dumps(extra, sort_keys=True, ensure_ascii=False)}".encode("utf-8"))
     return m.hexdigest()
 
 

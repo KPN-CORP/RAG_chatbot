@@ -4,7 +4,6 @@ import json
 from typing import Iterable, List, Sequence
 
 from langchain.schema import AIMessage, BaseMessage, HumanMessage, SystemMessage
-
 from logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -35,9 +34,7 @@ def build_chat_history_messages(
             parsed = json.loads(raw)
             raw = parsed
         except Exception:
-            logger.warning(
-                "chat_history is a plain string and not valid JSON. Ignoring."
-            )
+            logger.warning("chat_history is a plain string and not valid JSON. Ignoring.")
             return []
 
     # Now raw should be a list (hopefully)
@@ -115,8 +112,6 @@ def build_chat_history_messages(
     for i, m in enumerate(chat_history_messages):
         # content may not exist on some custom objects, use getattr safely
         content = getattr(m, "content", None)
-        logger.debug(
-            "  [%d] %s — content preview: %s", i, type(m).__name__, repr(content)[:200]
-        )
+        logger.debug("  [%d] %s — content preview: %s", i, type(m).__name__, repr(content)[:200])
 
     return chat_history_messages

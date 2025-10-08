@@ -10,3 +10,4 @@ chat_history.db
 *.log
 node_modules/
 /github.py
+*.ipynb

@@ -1,28 +1,43 @@
+# Only run hooks on Python files. Notebooks/YAML are ignored.
+# (You can still add a separate nbQA block later if you want to lint notebooks.)
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.4.5
-    hooks:
-      - id: ruff
-        args: ["--fix"]
-  - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
-    hooks:
-      - id: isort
-        args: ["--profile=black"]
-  - repo: https://github.com/psf/black
-    rev: 24.4.2
-    hooks:
-      - id: black
-        language_version: python3
   - repo: local
     hooks:
+      - id: ruff
+        name: ruff (lint + fix)
+        entry: ruff
+        args: ["check", "--fix"]
+        language: system
+        types: [python]          # <- critical: only *.py
+        exclude: '\.ipynb$'      # extra belt-and-suspenders
+
+      - id: isort
+        name: isort (black profile)
+        entry: isort
+        args: ["--profile=black"]
+        language: system
+        types: [python]
+        exclude: '\.ipynb$'
+
+      - id: black
+        name: black
+        entry: black
+        args: ["-l", "100"]
+        language: system
+        types: [python]
+        exclude: '\.ipynb$'
+
+      # On-demand dead code report (won't block commits)
       - id: vulture-report
         name: vulture dead code report
-        entry: bash
+        entry: python
         args:
           - -c
-          - >-
-            vulture . | tee application/dead_code_report.txt
+          - |
+            import subprocess, sys, pathlib
+            out = subprocess.run([sys.executable, "-m", "vulture", "."], capture_output=True, text=True)
+            pathlib.Path("application/dead_code_report.txt").write_text(out.stdout, encoding="utf-8")
+            print(out.stdout, end=""); sys.exit(0)
         language: system
         pass_filenames: false
         stages: [manual]

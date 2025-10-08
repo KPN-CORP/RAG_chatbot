@@ -4,7 +4,6 @@ import json
 from typing import List, Optional, Tuple
 
 import redis
-
 from config import MAX_HISTORY_MESSAGES, REDIS_URL, SESSION_TTL_SECONDS
 from logging_config import get_logger
 
@@ -62,9 +61,7 @@ def load_recent_history(session_id: str, n: int = MAX_HISTORY_MESSAGES) -> List[
 class RedisConversationMemory:
     """Lightweight conversation buffer that persists turns in Redis."""
 
-    def __init__(
-        self, session_id: str, max_messages: int = MAX_HISTORY_MESSAGES
-    ) -> None:
+    def __init__(self, session_id: str, max_messages: int = MAX_HISTORY_MESSAGES) -> None:
         """Create a memory helper for *session_id* limited to *max_messages*."""
 
         self.session_id = session_id

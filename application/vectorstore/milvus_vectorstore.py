@@ -5,9 +5,6 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from langchain_milvus import Milvus
-from pymilvus import connections
-
 from config import (
     collection_name,
     embedding_model,
@@ -15,8 +12,10 @@ from config import (
     milvus_host,
     milvus_port,
 )
+from langchain_milvus import Milvus
 from logging_config import get_logger
 from models.embbedings import get_gemini_embeddings
+from pymilvus import connections
 
 logger = get_logger(__name__)
 
@@ -57,13 +56,9 @@ def get_vectorstore() -> Milvus:
     }
 
     try:
-        logger.debug(
-            "Attempting to create Milvus vector store with vector_field parameter"
-        )
+        logger.debug("Attempting to create Milvus vector store with vector_field parameter")
         store = Milvus(vector_field="embedding", **vectorstore_kwargs)
-        logger.info(
-            "Initialised Milvus vector store", extra={"collection": collection_name}
-        )
+        logger.info("Initialised Milvus vector store", extra={"collection": collection_name})
         return store
     except TypeError as exc:
         logger.info(
