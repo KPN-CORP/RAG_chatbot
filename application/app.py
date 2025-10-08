@@ -1,24 +1,33 @@
 """FastAPI application entry point exposing chat and session endpoints."""
 
+import hashlib
 import os
+import tempfile
 import uuid
+from pathlib import Path
 
 import redis
 from config import (
     MAX_HISTORY_MESSAGES,
     REDIS_URL,
     SESSION_TTL_SECONDS,
+    collection_name,
+    embedding_model,
     gemini_chat_model,
     google_api_key_name,
+    milvus_host,
+    milvus_port,
     qa_system_prompt,
 )
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 # LangChain imports (use provider wrapper)
 from langchain_google_genai import ChatGoogleGenerativeAI
 from logging_config import configure_logging, get_logger
+from ingest.langchain_milvus_ingest import ingest_pages_to_milvus
+from ingest.pdf_with_tables import extract_pdf_content
 from modules.history_utils import build_chat_history_messages
 from modules.redis import RedisConversationMemory
 from schemas.api import ChatReq, ChatResp, CreateSessionResp
@@ -51,6 +60,29 @@ def session_exists(sid: str) -> bool:
     return r.exists(_session_meta_key(sid)) == 1
 
 
+def _resolve_embedding_api_key() -> str:
+    """Fetch the Gemini embedding API key using known environment fallbacks."""
+
+    candidates = [
+        os.environ.get(google_api_key_name),
+        os.environ.get("GEMINI_API_KEY"),
+        os.environ.get("GOOGLE_API_KEY"),
+    ]
+    for value in candidates:
+        if value:
+            return value
+    return ""
+
+
+def _build_document_identifier(filename: str, data: bytes) -> str:
+    """Create a stable document identifier using filename and SHA-256 digest."""
+
+    name = Path(filename).stem if filename else "document"
+    safe_name = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in name)
+    digest = hashlib.sha256(data).hexdigest()[:16]
+    return f"{safe_name or 'document'}-{digest}"
+
+
 # ----- Endpoints -----
 @app.post("/session", response_model=CreateSessionResp)
 def create_session():
@@ -61,6 +93,82 @@ def create_session():
     r.expire(_session_meta_key(sid), SESSION_TTL_SECONDS)
     logger.info("Created new chat session", extra={"session_id": sid})
     return {"session_id": sid}
+
+
+@app.post("/ingest/upload")
+async def upload_document(file: UploadFile = File(...)):
+    """Ingest a user-provided PDF document into the Milvus knowledge base."""
+
+    if file.content_type not in {"application/pdf", "application/x-pdf"}:
+        raise HTTPException(status_code=400, detail="Only PDF uploads are supported.")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    doc_id = _build_document_identifier(file.filename or "document.pdf", data)
+    logger.info(
+        "Received document upload",
+        extra={"filename": file.filename, "doc_id": doc_id, "size_bytes": len(data)},
+    )
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(data)
+        tmp_path = tmp.name
+
+    try:
+        pages = extract_pdf_content(tmp_path)
+    except Exception as exc:  # pragma: no cover - pdf parsing issues
+        logger.exception(
+            "Failed to extract PDF content",
+            extra={"filename": file.filename, "doc_id": doc_id},
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to read PDF: {exc}") from exc
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            logger.debug("Temporary upload file already removed", extra={"path": tmp_path})
+
+    if not pages:
+        raise HTTPException(status_code=400, detail="No readable content found in PDF.")
+
+    api_key = _resolve_embedding_api_key()
+
+    try:
+        skipped, inserted = ingest_pages_to_milvus(
+            pages=pages,
+            doc_id=doc_id,
+            source=file.filename or doc_id,
+            collection_name=collection_name,
+            milvus_host=milvus_host,
+            milvus_port=milvus_port,
+            embedding_model=embedding_model,
+            api_key=api_key or None,
+        )
+    except Exception as exc:  # pragma: no cover - ingestion pipeline errors
+        logger.exception(
+            "Failed to ingest document",
+            extra={"filename": file.filename, "doc_id": doc_id},
+        )
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
+
+    logger.info(
+        "Document ingestion completed",
+        extra={
+            "doc_id": doc_id,
+            "filename": file.filename,
+            "skipped_chunks": skipped,
+            "inserted_chunks": inserted,
+        },
+    )
+
+    return {
+        "doc_id": doc_id,
+        "filename": file.filename or doc_id,
+        "skipped_chunks": skipped,
+        "inserted_chunks": inserted,
+    }
 
 
 @app.post("/chat", response_model=ChatResp)
