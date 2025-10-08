@@ -20,6 +20,7 @@ class ChatReq(BaseModel):
 
     session_id: str
     question: str
+    debug_retrieval: bool = False
 
 
 class ChatResp(BaseModel):
