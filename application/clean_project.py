@@ -18,11 +18,12 @@ Other handy entry points::
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, MutableMapping, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REPORT_PATH = PROJECT_ROOT / "application" / "dead_code_report.txt"
@@ -64,12 +65,33 @@ def format_command(cmd: Sequence[str]) -> str:
     return " ".join(cmd)
 
 
-def run(cmd: Sequence[str], desc: str) -> bool:
+def pre_commit_env() -> Mapping[str, str]:
+    """Return the environment used to invoke ``pre-commit`` commands.
+
+    The pre-commit framework creates its own virtual environments on the fly.
+    On some Windows installations pip looks up system-wide configuration
+    directories via the Windows registry, which may be unavailable (for
+    example, in corporate images with locked down registry keys).  The lookup
+    failure raises ``FileNotFoundError`` and prevents the hook environments
+    from installing.  ``platformdirs`` – the library responsible for that
+    lookup – honours the ``PLATFORMDIRS_FORCE_POSIX`` variable to skip the
+    Windows-specific registry access and fall back to a cross-platform
+    implementation.  Setting it keeps the workflow functional while leaving
+    non-Windows platforms unaffected.
+    """
+
+    env: MutableMapping[str, str] = os.environ.copy()
+    if sys.platform.startswith("win"):
+        env.setdefault("PLATFORMDIRS_FORCE_POSIX", "1")
+    return env
+
+
+def run(cmd: Sequence[str], desc: str, *, env: Mapping[str, str] | None = None) -> bool:
     """Run a shell command and report whether it succeeded."""
 
     print(f"\n🔹 {desc}")
     try:
-        subprocess.run(cmd, check=True, cwd=PROJECT_ROOT)
+        subprocess.run(cmd, check=True, cwd=PROJECT_ROOT, env=env)
     except subprocess.CalledProcessError:
         print(f"⚠️ Failed: {format_command(cmd)}")
         return False
@@ -109,8 +131,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--install",
         action="store_true",
         help=(
-            "Install or update the repository's pre-commit hook without "
-            "running any checks."
+            "Install or update the repository's Git pre-commit hook so the "
+            "same checks run automatically before each commit."
         ),
     )
     group.add_argument(
@@ -139,16 +161,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     ensure_pre_commit_available()
 
     if args.install:
-        if run(["pre-commit", "install"], "Installing the local pre-commit hook"):
+        if run(
+            ["pre-commit", "install"],
+            "Installing the local pre-commit hook",
+            env=pre_commit_env(),
+        ):
             print(
                 "\n✅ Hook installed. Future commits will run the same checks "
-                "automatically."
+                "automatically before Git creates a commit."
+            )
+            print(
+                "   (The command above writes .git/hooks/pre-commit so that "
+                "pre-commit can block commits when the cleanup fails.)"
             )
             return 0
         return 1
 
     for cmd, desc in COMMANDS:
-        if not run(cmd, desc):
+        if not run(cmd, desc, env=pre_commit_env()):
             print(
                 "\n⚠️ Some steps did not complete successfully. "
                 "Address the reported issues and re-run the script."
