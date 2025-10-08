@@ -1,17 +1,23 @@
 """Utility helpers supporting deterministic document chunking."""
 
-import re
 import hashlib
-from typing import Dict, Any, Optional
+
 # from dataclasses import dataclass
 import json
-
+import re
+from typing import Any, Dict, Optional
 
 # -----------------------------
 # Checksum / IDs
 # -----------------------------
 
-def _checksum(text: str, source: Optional[str] = None, page: Optional[int] = None, extra: Optional[Dict[str, Any]] = None) -> str:
+
+def _checksum(
+    text: str,
+    source: Optional[str] = None,
+    page: Optional[int] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> str:
     """Stable checksum for dedupe (text + context)."""
     m = hashlib.sha1()
     m.update(text.encode("utf-8"))
@@ -20,8 +26,13 @@ def _checksum(text: str, source: Optional[str] = None, page: Optional[int] = Non
     if page is not None:
         m.update(f"|pg:{page}".encode("utf-8"))
     if extra:
-        m.update(f"|x:{json.dumps(extra, sort_keys=True, ensure_ascii=False)}".encode("utf-8"))
+        m.update(
+            f"|x:{json.dumps(extra, sort_keys=True, ensure_ascii=False)}".encode(
+                "utf-8"
+            )
+        )
     return m.hexdigest()
+
 
 # -----------------------------
 # Text normalization / heuristics
@@ -29,8 +40,9 @@ def _checksum(text: str, source: Optional[str] = None, page: Optional[int] = Non
 
 # HDR_RE = re.compile(r"^[A-Z0-9 ./-]{6,}$")          # heuristic ALL-CAPS headers
 HDR_RE = re.compile(r"^[A-Z0-9 ()/.,&\-’'–—:]{6,}$")
-TRAIL_NUM_RE = re.compile(r"(\s\d{1,3})$")          # trailing page line nums like " 21"
+TRAIL_NUM_RE = re.compile(r"(\s\d{1,3})$")  # trailing page line nums like " 21"
 BULLET_MARK_RE = re.compile(r"^(?:[•●\-–▪]|○|\d+\.)\s*")
+
 
 def _clean_line(s: str) -> str:
     """Remove whitespace noise and trailing numbers from a line."""
@@ -40,10 +52,12 @@ def _clean_line(s: str) -> str:
     s = re.sub(r"\s+", " ", s)
     return s
 
+
 def _is_header(line: str) -> bool:
     """Heuristically determine whether *line* looks like a header chunk."""
 
     return bool(HDR_RE.match(line)) and (" " in line or "-" in line or "/" in line)
+
 
 def _norm_for_embed(s: str) -> str:
     """Normalise a string before creating embeddings."""
@@ -51,6 +65,7 @@ def _norm_for_embed(s: str) -> str:
     s = s.strip().lower()
     s = re.sub(r"\s+", " ", s)
     return s
+
 
 def _to_number(s: str) -> Optional[float]:
     """Generic numeric parse: '1.200'->1200, '1200'->1200, '80'->80, else None."""

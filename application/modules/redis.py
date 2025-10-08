@@ -1,15 +1,16 @@
 """Helpers for storing and retrieving chat history from Redis."""
 
 import json
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 
 import redis
 
-from config import REDIS_URL, SESSION_TTL_SECONDS, MAX_HISTORY_MESSAGES
+from config import MAX_HISTORY_MESSAGES, REDIS_URL, SESSION_TTL_SECONDS
 from logging_config import get_logger
 
 r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 logger = get_logger(__name__)
+
 
 # ----- Helpers for Redis history -----
 # Key patterns:
@@ -18,6 +19,7 @@ def _history_key(session_id: str) -> str:
     """Return the canonical Redis key that stores history for *session_id*."""
 
     return f"session:{session_id}:history"
+
 
 def append_history_item(
     session_id: str,
@@ -42,6 +44,7 @@ def append_history_item(
         },
     )
 
+
 def load_recent_history(session_id: str, n: int = MAX_HISTORY_MESSAGES) -> List[dict]:
     """Return up to *n* most recent history entries for *session_id*."""
 
@@ -54,11 +57,14 @@ def load_recent_history(session_id: str, n: int = MAX_HISTORY_MESSAGES) -> List[
     )
     return items
 
+
 # Redis-backed "memory-like" helper (mimics old ConversationBufferMemory enough for drop-in)
 class RedisConversationMemory:
     """Lightweight conversation buffer that persists turns in Redis."""
 
-    def __init__(self, session_id: str, max_messages: int = MAX_HISTORY_MESSAGES) -> None:
+    def __init__(
+        self, session_id: str, max_messages: int = MAX_HISTORY_MESSAGES
+    ) -> None:
         """Create a memory helper for *session_id* limited to *max_messages*."""
 
         self.session_id = session_id

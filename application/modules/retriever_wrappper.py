@@ -1,10 +1,12 @@
 """Wrapper that sanitises retrieval results before feeding them into the LLM."""
+
 # not used
 
 import json
-from typing import List, Any
+from typing import Any, List
+
 try:
-    from langchain.schema import Document, BaseRetriever
+    from langchain.schema import BaseRetriever, Document
 except Exception:
     from langchain.retrievers.base import BaseRetriever
     from langchain.schema import Document
@@ -39,6 +41,7 @@ def sanitize_docs(docs: List[Document]) -> List[Document]:
         sanitized.append(Document(page_content=new_text, metadata=d.metadata))
     return sanitized
 
+
 class SanitizingRetriever(BaseRetriever):
     """LangChain retriever wrapper that ensures string page content."""
 
@@ -46,10 +49,24 @@ class SanitizingRetriever(BaseRetriever):
 
     # attributes we will NOT forward to the underlying retriever to avoid recursion/special-handling
     _DO_NOT_FORWARD = {
-        "__dict__", "__getstate__", "__setstate__", "__getattr__", "__getattribute__",
-        "model_dump", "model_dump_json", "dict", "json", "schema", "schema_json",
-        "__class__", "__repr__", "__str__", "__reduce__", "__reduce_ex__",
-        "get_relevant_documents", "aget_relevant_documents"
+        "__dict__",
+        "__getstate__",
+        "__setstate__",
+        "__getattr__",
+        "__getattribute__",
+        "model_dump",
+        "model_dump_json",
+        "dict",
+        "json",
+        "schema",
+        "schema_json",
+        "__class__",
+        "__repr__",
+        "__str__",
+        "__reduce__",
+        "__reduce_ex__",
+        "get_relevant_documents",
+        "aget_relevant_documents",
     }
 
     def __init__(self, base_retriever: Any, **kwargs):
@@ -77,7 +94,11 @@ class SanitizingRetriever(BaseRetriever):
         """Forward unknown attributes to the wrapped retriever while avoiding recursion."""
 
         # block forwarding of internal/pydantic/serialization attributes to avoid recursion
-        if name in self._DO_NOT_FORWARD or name.startswith("_") or name.endswith("_json"):
+        if (
+            name in self._DO_NOT_FORWARD
+            or name.startswith("_")
+            or name.endswith("_json")
+        ):
             raise AttributeError(name)
         # else forward to underlying retriever
         return getattr(self._base_retriever, name)

@@ -1,4 +1,5 @@
 """Helpers to initialise the Milvus vector store used by the application."""
+
 from __future__ import annotations
 
 import os
@@ -28,7 +29,10 @@ def _resolve_api_key(explicit_key: Optional[str]) -> Optional[str]:
     env_value = os.environ.get(google_api_key_name)
     if env_value:
         return env_value
-    logger.warning("Gemini API key not found in environment", extra={"env_var": google_api_key_name})
+    logger.warning(
+        "Gemini API key not found in environment",
+        extra={"env_var": google_api_key_name},
+    )
     return None
 
 
@@ -53,9 +57,13 @@ def get_vectorstore() -> Milvus:
     }
 
     try:
-        logger.debug("Attempting to create Milvus vector store with vector_field parameter")
+        logger.debug(
+            "Attempting to create Milvus vector store with vector_field parameter"
+        )
         store = Milvus(vector_field="embedding", **vectorstore_kwargs)
-        logger.info("Initialised Milvus vector store", extra={"collection": collection_name})
+        logger.info(
+            "Initialised Milvus vector store", extra={"collection": collection_name}
+        )
         return store
     except TypeError as exc:
         logger.info(
@@ -63,7 +71,10 @@ def get_vectorstore() -> Milvus:
             extra={"error": str(exc)},
         )
         store = Milvus(embedding_field="embedding", **vectorstore_kwargs)
-        logger.info("Initialised Milvus vector store using embedding_field fallback", extra={"collection": collection_name})
+        logger.info(
+            "Initialised Milvus vector store using embedding_field fallback",
+            extra={"collection": collection_name},
+        )
         return store
     except Exception:
         logger.exception("Failed to initialise Milvus vector store")

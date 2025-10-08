@@ -31,3 +31,8 @@ dependencies:
       - torch
       - transformers
       - uvicorn[standard]
+      - ruff 
+      - isort 
+      - black 
+      - vulture
+

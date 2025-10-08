@@ -1,4 +1,5 @@
 """Application logging configuration utilities."""
+
 from __future__ import annotations
 
 import logging
@@ -33,7 +34,11 @@ def _build_logging_config(log_level: str) -> dict:
             },
         },
         "loggers": {
-            "uvicorn": {"handlers": ["uvicorn"], "level": log_level, "propagate": False},
+            "uvicorn": {
+                "handlers": ["uvicorn"],
+                "level": log_level,
+                "propagate": False,
+            },
             "uvicorn.error": {
                 "handlers": ["uvicorn"],
                 "level": log_level,

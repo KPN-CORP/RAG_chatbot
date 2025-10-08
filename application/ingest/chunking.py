@@ -1,10 +1,16 @@
 # ingest/chunking.py
 from __future__ import annotations
-from typing import List, Dict, Any, Tuple, Optional
+
 import math
+from typing import Any, Dict, List, Optional, Tuple
+
 from modules.chunking_utils import (
-    _clean_line, _is_header, _norm_for_embed, _checksum, _normalize_header,
-    BULLET_MARK_RE
+    BULLET_MARK_RE,
+    _checksum,
+    _clean_line,
+    _is_header,
+    _norm_for_embed,
+    _normalize_header,
 )
 
 # -----------------------------
@@ -23,7 +29,10 @@ __all__ = [
 # Parse to nodes (structure-first)
 # -----------------------------
 
-def parse_policy_to_nodes(text: str, section_hint: Optional[str] = None) -> List[Dict[str, Any]]:
+
+def parse_policy_to_nodes(
+    text: str, section_hint: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """
     Convert raw narrative text into nodes with breadcrumb 'path' and 'kind'.
     node = {'path': ['SECTION','Subsection'], 'kind':'header'|'bullet'|'para', 'line': str}
@@ -40,7 +49,7 @@ def parse_policy_to_nodes(text: str, section_hint: Optional[str] = None) -> List
         if _is_header(line):
             title = line.title()
             path = [title]
-            out.append({'path': path[:], 'kind': 'header', 'line': title})
+            out.append({"path": path[:], "kind": "header", "line": title})
             continue
 
         if BULLET_MARK_RE.match(line):
@@ -54,24 +63,27 @@ def parse_policy_to_nodes(text: str, section_hint: Optional[str] = None) -> List
                         path[-1] = label
                 else:
                     path = [label]
-                out.append({'path': path[:], 'kind': 'para', 'line': label})
+                out.append({"path": path[:], "kind": "para", "line": label})
             else:
-                out.append({'path': path[:], 'kind': 'bullet', 'line': content})
+                out.append({"path": path[:], "kind": "bullet", "line": content})
         else:
-            out.append({'path': path[:], 'kind': 'para', 'line': line})
+            out.append({"path": path[:], "kind": "para", "line": line})
 
     return out
+
 
 # -----------------------------
 # Semantic grouping utilities
 # -----------------------------
 
+
 def _cosine(a: List[float], b: List[float]) -> float:
     """Cosine similarity without external deps."""
-    dot = sum(x*y for x, y in zip(a, b))
-    na = math.sqrt(sum(x*x for x in a)) or 1e-12
-    nb = math.sqrt(sum(y*y for y in b)) or 1e-12
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a)) or 1e-12
+    nb = math.sqrt(sum(y * y for y in b)) or 1e-12
     return dot / (na * nb)
+
 
 def _embed_small_texts(texts: List[str], embeddings) -> List[List[float]]:
     """
@@ -82,16 +94,18 @@ def _embed_small_texts(texts: List[str], embeddings) -> List[List[float]]:
         return []
     return embeddings.embed_documents(texts)
 
+
 # -----------------------------
 # Group bullets/paras into Atomic Rules (semantic)
 # -----------------------------
 
+
 def group_atomic_rules_semantic(
     nodes: List[Dict[str, Any]],
-    embeddings,                           # required (e.g., GoogleGenerativeAIEmbeddings instance)
-    sim_threshold: float = 0.82,          # tune 0.78–0.86
+    embeddings,  # required (e.g., GoogleGenerativeAIEmbeddings instance)
+    sim_threshold: float = 0.82,  # tune 0.78–0.86
     use_percentile: bool = False,
-    percentile: int = 90
+    percentile: int = 90,
 ) -> List[Dict[str, Any]]:
     """
     Group bullets/paras into atomic rules by semantic continuity:
@@ -103,15 +117,15 @@ def group_atomic_rules_semantic(
     and set threshold to the given percentile(similarities).
     """
     # Collect sequence with headers marked
-    items: List[Tuple[List[str], str]] = []   # (path, text)
+    items: List[Tuple[List[str], str]] = []  # (path, text)
     paths: List[List[str]] = []
     for n in nodes:
-        if n['kind'] == 'header':
-            items.append((['__HEADER__'], n['line'].strip()))
-            paths.append(['__HEADER__'])
+        if n["kind"] == "header":
+            items.append((["__HEADER__"], n["line"].strip()))
+            paths.append(["__HEADER__"])
         else:
-            items.append((n['path'][:], n['line'].strip()))
-            paths.append(n['path'][:])
+            items.append((n["path"][:], n["line"].strip()))
+            paths.append(n["path"][:])
 
     if not items:
         return []
@@ -119,7 +133,7 @@ def group_atomic_rules_semantic(
     # Embed all non-header lines once (batched)
     idxs, to_embed = [], []
     for i, (_, txt) in enumerate(items):
-        if paths[i] and paths[i][0] == '__HEADER__': 
+        if paths[i] and paths[i][0] == "__HEADER__":
             continue
         norm = _norm_for_embed(txt)
         idxs.append(i)
@@ -130,15 +144,15 @@ def group_atomic_rules_semantic(
     # Compute consecutive sims for same path
     sims: List[float] = []
     for i in range(1, len(items)):
-        if paths[i-1] and paths[i-1][0] == '__HEADER__': 
+        if paths[i - 1] and paths[i - 1][0] == "__HEADER__":
             continue
-        if paths[i] and paths[i][0] == '__HEADER__':
+        if paths[i] and paths[i][0] == "__HEADER__":
             continue
-        if paths[i] != paths[i-1]:
+        if paths[i] != paths[i - 1]:
             continue
-        if (i-1) not in emb_by_idx or i not in emb_by_idx:
+        if (i - 1) not in emb_by_idx or i not in emb_by_idx:
             continue
-        sims.append(float(_cosine(emb_by_idx[i-1], emb_by_idx[i])))
+        sims.append(float(_cosine(emb_by_idx[i - 1], emb_by_idx[i])))
 
     # Adaptive threshold (optional)
     if use_percentile and sims:
@@ -154,11 +168,11 @@ def group_atomic_rules_semantic(
     def flush():
         nonlocal buf, cur_path
         if buf and cur_path:
-            rules.append({'path': cur_path[:], 'text': " ".join(buf).strip()})
+            rules.append({"path": cur_path[:], "text": " ".join(buf).strip()})
         buf = []
 
     for i, (p, txt) in enumerate(items):
-        if p and p[0] == '__HEADER__':
+        if p and p[0] == "__HEADER__":
             flush()
             continue
 
@@ -171,8 +185,13 @@ def group_atomic_rules_semantic(
             continue
 
         # continuity check with previous item if same path and both embedded
-        if i-1 >= 0 and paths[i-1] == cur_path and (i-1) in emb_by_idx and i in emb_by_idx:
-            sim = _cosine(emb_by_idx[i-1], emb_by_idx[i])
+        if (
+            i - 1 >= 0
+            and paths[i - 1] == cur_path
+            and (i - 1) in emb_by_idx
+            and i in emb_by_idx
+        ):
+            sim = _cosine(emb_by_idx[i - 1], emb_by_idx[i])
             if sim >= sim_threshold:
                 buf.append(txt)
             else:
@@ -188,9 +207,11 @@ def group_atomic_rules_semantic(
         flush()
     return rules
 
+
 # -----------------------------
 # Semantic fallback for long prose
 # -----------------------------
+
 
 def semantic_refine_rules(
     rules: List[Dict[str, Any]],
@@ -218,30 +239,31 @@ def semantic_refine_rules(
     )
     refined: List[Dict[str, Any]] = []
     for r in rules:
-        t = r['text']
+        t = r["text"]
         if len(t) <= max_chars:
             refined.append(r)
             continue
         docs = splitter.create_documents([t])
         for d in docs:
-            refined.append({'path': r['path'], 'text': d.page_content.strip()})
+            refined.append({"path": r["path"], "text": d.page_content.strip()})
     return refined
+
 
 # -----------------------------
 # Convert atomic rules -> chunks
 # -----------------------------
 
+
 def atomic_rules_to_chunks(
-    rules: List[Dict[str, Any]],
-    doc_id: str,
-    source: str,
-    page: Optional[int]
+    rules: List[Dict[str, Any]], doc_id: str, source: str, page: Optional[int]
 ) -> List[Dict[str, Any]]:
     """Make child chunks for atomic rules (embed these)."""
     out: List[Dict[str, Any]] = []
     for i, r in enumerate(rules, 1):
-        breadcrumb = " > ".join(r['path']) if r['path'] else ""
-        text = (f"{breadcrumb} — {r['text']}".strip() if breadcrumb else r['text'].strip())
+        breadcrumb = " > ".join(r["path"]) if r["path"] else ""
+        text = (
+            f"{breadcrumb} — {r['text']}".strip() if breadcrumb else r["text"].strip()
+        )
         meta = {
             "source": source,
             "page": page,
@@ -253,14 +275,19 @@ def atomic_rules_to_chunks(
             "col_name": None,
         }
         cid = f"{doc_id}::rule::{page or 0:04d}::{i:04d}"
-        csum = _checksum(text, source=source, page=page, extra={"kind": "policy_rule", "i": i})
-        out.append({
-            "chunk_id": cid,
-            "chunk_text": text,
-            "checksum": csum,
-            **meta,
-        })
+        csum = _checksum(
+            text, source=source, page=page, extra={"kind": "policy_rule", "i": i}
+        )
+        out.append(
+            {
+                "chunk_id": cid,
+                "chunk_text": text,
+                "checksum": csum,
+                **meta,
+            }
+        )
     return out
+
 
 def table_cells_to_chunks(
     table_dict_rows: List[Dict[str, Any]],
@@ -270,8 +297,10 @@ def table_cells_to_chunks(
     table_index: int,
     table_title: Optional[str] = None,
     *,
-    id_col: Optional[str] = None,            # optional: force an ID column, else auto-pick first column
-    include_identifier_cell: bool = True,    # include the ID column as a cell-chunk too
+    id_col: Optional[
+        str
+    ] = None,  # optional: force an ID column, else auto-pick first column
+    include_identifier_cell: bool = True,  # include the ID column as a cell-chunk too
 ) -> List[Dict[str, Any]]:
     """
     Emit exactly one chunk per (row, col) cell.
@@ -310,32 +339,41 @@ def table_cells_to_chunks(
             txt = f"{(table_title + ' — ') if table_title else ''}{row_tag} • Col[{col_name}] ⇒ {val}"
 
             cid = f"{row_id}::cell::{c_idx:03d}"
-            csum = _checksum(txt, source=source, page=page, extra={"table": table_id, "row": r_idx, "col": col_name})
+            csum = _checksum(
+                txt,
+                source=source,
+                page=page,
+                extra={"table": table_id, "row": r_idx, "col": col_name},
+            )
 
-            out.append({
-                "chunk_id": cid,
-                "chunk_text": txt,
-                "checksum": csum,
-                "source": source,
-                "page": page,
-                "element_type": "table_cell",
-                "table_id": table_id,
-                "row_id": row_id,
-                "col_name": col_name,
-                "breadcrumb": table_title or "",
-                "list_id": None,
-            })
+            out.append(
+                {
+                    "chunk_id": cid,
+                    "chunk_text": txt,
+                    "checksum": csum,
+                    "source": source,
+                    "page": page,
+                    "element_type": "table_cell",
+                    "table_id": table_id,
+                    "row_id": row_id,
+                    "col_name": col_name,
+                    "breadcrumb": table_title or "",
+                    "list_id": None,
+                }
+            )
     return out
+
 
 # -----------------------------
 # Page-level builder (with section carry)
 # -----------------------------
 
+
 def build_chunks_from_pages(
     pages: List[Dict[str, Any]],
     doc_id: str,
     source: str,
-    embeddings_for_semantic,               # embeddings instance for grouping & optional fallback
+    embeddings_for_semantic,  # embeddings instance for grouping & optional fallback
     enable_semantic_fallback: bool = True,
     semantic_fallback_max_chars: int = 1000,
     sim_threshold: float = 0.82,
@@ -388,7 +426,7 @@ def build_chunks_from_pages(
                 embeddings=embeddings_for_semantic,
                 sim_threshold=sim_threshold,
                 use_percentile=use_percentile,
-                percentile=percentile
+                percentile=percentile,
             )
             rules = semantic_refine_rules(
                 rules,
@@ -398,7 +436,11 @@ def build_chunks_from_pages(
                 breakpoint_threshold_type="percentile",
                 breakpoint_threshold_amount=95,
             )
-            built.extend(atomic_rules_to_chunks(rules, doc_id=doc_id, source=source, page=page_no))
+            built.extend(
+                atomic_rules_to_chunks(
+                    rules, doc_id=doc_id, source=source, page=page_no
+                )
+            )
 
         # 2) Tables → cell chunks
         for t in tables:
