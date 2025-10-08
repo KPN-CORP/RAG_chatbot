@@ -15,6 +15,7 @@ class ChatReq(BaseModel):
     """Request body for the main chat endpoint."""
     session_id: str
     question: str
+    debug_retrieval: bool = False
 
 class ChatResp(BaseModel):
     """Response body for the main chat endpoint."""

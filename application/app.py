@@ -80,6 +80,27 @@ def chat(req: ChatReq):
     # If you have a safe SanitizingRetriever (no LLM calls inside), use it; otherwise keep the plain retriever:
     # sanitized_retriever = SanitizingRetriever(retriever)
 
+    debug_retrieval = bool(getattr(req, "debug_retrieval", False))
+    retrieved_docs = []
+    formatted_context = None
+
+    if debug_retrieval:
+        # Fetch documents once so they can be reused for both the prompt context and
+        # any downstream logging/inspection in this function.
+        try:
+            retrieved_docs = retriever.invoke(req.question) or []
+        except Exception:
+            logger.exception(
+                "Failed to retrieve documents", extra={"session_id": req.session_id}
+            )
+            raise HTTPException(
+                status_code=500, detail="Retriever error while fetching documents."
+            )
+
+        # Prepare the formatted context string once so the chain does not need to
+        # re-run document formatting internally.
+        formatted_context = format_docs_with_metadata(retrieved_docs)
+
     # 4) Build the LLM client (safe fetch of API key)
     api_key_value = os.environ.get(google_api_key_name)  # ensure `google_api_key_name` is the env var name string from config
     if not api_key_value:
@@ -98,22 +119,39 @@ def chat(req: ChatReq):
     ])
 
     # 6) Build the RAG chain (components + flow)
-    rag_chain = (
-        {
-            # The retriever runs first, using the original question.
-            # Its output is passed to format_docs and becomes the 'context'.
-            "context": (lambda x: x["question"]) | retriever | format_docs_with_metadata,
-            
-            # The original 'question' is passed through unchanged.
-            "question": (lambda x: x["question"]),
-            
-            # The 'chat_history' is passed through unchanged.
-            "chat_history": (lambda x: x["chat_history"])
-        }
-        | qa_prompt
-        | llm
-        | pydantic_parser
-    )
+    if debug_retrieval:
+        rag_chain = (
+            {
+                # The retrieved docs are pre-fetched and formatted to a context string above.
+                "context": (lambda x: x["context"]),
+
+                # The original 'question' is passed through unchanged.
+                "question": (lambda x: x["question"]),
+
+                # The 'chat_history' is passed through unchanged.
+                "chat_history": (lambda x: x["chat_history"])
+            }
+            | qa_prompt
+            | llm
+            | pydantic_parser
+        )
+    else:
+        rag_chain = (
+            {
+                # The retriever runs first, using the original question.
+                # Its output is passed to format_docs and becomes the 'context'.
+                "context": (lambda x: x["question"]) | retriever | format_docs_with_metadata,
+
+                # The original 'question' is passed through unchanged.
+                "question": (lambda x: x["question"]),
+
+                # The 'chat_history' is passed through unchanged.
+                "chat_history": (lambda x: x["chat_history"])
+            }
+            | qa_prompt
+            | llm
+            | pydantic_parser
+        )
 
     # 7) Load raw history from Redis and normalize to BaseMessage list (helper)
     raw_history = mem.get_chat_history_pairs()  # whatever your Redis class returns
@@ -123,12 +161,16 @@ def chat(req: ChatReq):
     # print("chat_history_messages in app.py:", chat_history_messages)
 
     # 8) Invoke the chain; pass 'history' (string) and let the chain fetch context from retriever
+    invoke_payload = {
+        "question": req.question,
+        "chat_history": chat_history_messages,
+    }
+    if debug_retrieval:
+        invoke_payload["context"] = formatted_context
+
     try:
         # The invoke call now passes a single dictionary with all the required keys
-        result = rag_chain.invoke({
-            "question": req.question, 
-            "chat_history": chat_history_messages
-        })
+        result = rag_chain.invoke(invoke_payload)
 
     except Exception as e:
         # print full exception with context for easier debugging in logs
@@ -138,8 +180,27 @@ def chat(req: ChatReq):
         # Log/raise more helpful error in production
         raise HTTPException(status_code=500, detail=f"LLM/chain error: {e}")
 
-    # 9) Debug print retrieved docs and extract answer + sources
-    # print_retrieved_docs(result)
+    # 9) Debug logging helper: inspect retrieved docs from this request
+    if debug_retrieval:
+        if retrieved_docs:
+            logger.debug(
+                "Retrieved documents",
+                extra={
+                    "session_id": req.session_id,
+                    "retrieved_docs": [
+                        {
+                            "filename": doc.metadata.get("filename", "N/A"),
+                            "page": doc.metadata.get("page", "N/A"),
+                        }
+                        for doc in retrieved_docs
+                    ],
+                },
+            )
+        else:
+            logger.debug(
+                "No documents retrieved for question",
+                extra={"session_id": req.session_id, "question": req.question},
+            )
 
     # Pull assistant answer and source documents
     assistant_text = result.answer or result.result or ""
