@@ -68,6 +68,13 @@ def run(cmd: Sequence[str], desc: str) -> bool:
         return False
     return True
 
+    for cmd, desc in commands:
+        if not run(cmd, desc):
+            print(
+                "\n⚠️ Some steps did not complete successfully. "
+                "Address the reported issues and re-run the script."
+            )
+            return 1
 
 def describe_workflow(lines: Iterable[str]) -> None:
     """Print a short explanation of the configured maintenance steps."""
