@@ -4,8 +4,8 @@ import os
 from typing import Optional
 
 from langchain_huggingface import HuggingFaceEmbeddings
-from config import google_api_key_name
 
+from config import google_api_key_name
 from logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -19,6 +19,7 @@ except Exception as exc:  # pragma: no cover - fallback for older LangChain vers
         extra={"error": str(exc)},
     )
     from langchain.embeddings import GoogleGenerativeAIEmbeddings  # type: ignore
+
 
 def get_huggingface_embeddings(semantic_embedding_model: str) -> HuggingFaceEmbeddings:
     """Return a CPU-friendly HuggingFace embedding model configured for semantic search."""
@@ -62,4 +63,3 @@ def get_gemini_embeddings(
         )  # type: ignore
 
     return embeddings
-    

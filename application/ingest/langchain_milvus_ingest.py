@@ -7,18 +7,28 @@ End-to-end ingest with Gemini embeddings + Milvus storage.
 """
 
 from __future__ import annotations
-from typing import List, Dict, Any, Tuple, Optional, Set
-import os
-import logging
 
-# Embeddings (Gemini via LangChain)
-from models.embbedings import get_gemini_embeddings
+import logging
+import os
+from typing import Any, Dict, List, Optional, Set, Tuple
+
 from congig import google_api_key_name
+
 # Milvus
-from pymilvus import connections, FieldSchema, CollectionSchema, Collection, DataType, utility
+from pymilvus import (
+    Collection,
+    CollectionSchema,
+    DataType,
+    FieldSchema,
+    connections,
+    utility,
+)
 
 # Chunking
 from ingest.chunking import build_chunks_from_pages
+
+# Embeddings (Gemini via LangChain)
+from models.embbedings import get_gemini_embeddings
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -27,7 +37,10 @@ log = logging.getLogger(__name__)
 # Records shaping (unchanged)
 # -----------------------------
 
-def chunks_to_records(chunks: List[Dict[str, Any]]) -> List[Tuple[str, str, str, Dict[str, Any]]]:
+
+def chunks_to_records(
+    chunks: List[Dict[str, Any]],
+) -> List[Tuple[str, str, str, Dict[str, Any]]]:
     """
     Convert chunk dicts -> tuples (id, text, checksum, metadata).
     """
@@ -54,25 +67,41 @@ def chunks_to_records(chunks: List[Dict[str, Any]]) -> List[Tuple[str, str, str,
         out.append((cid, text, checksum, md))
     return out
 
+
 # -----------------------------
 # Milvus helpers
 # -----------------------------
 
-def ensure_collection_exists_with_schema(collection_name: str, dim: int,
-                                        host: str, port: str,
-                                        index_params: Optional[dict] = None,
-                                        dry_run: bool = False) -> Optional[Collection]:
+
+def ensure_collection_exists_with_schema(
+    collection_name: str,
+    dim: int,
+    host: str,
+    port: str,
+    index_params: Optional[dict] = None,
+    dry_run: bool = False,
+) -> Optional[Collection]:
     if index_params is None:
-        index_params = {"index_type": "HNSW", "metric_type": "COSINE", "params": {"M": 16, "efConstruction": 200}}
+        index_params = {
+            "index_type": "HNSW",
+            "metric_type": "COSINE",
+            "params": {"M": 16, "efConstruction": 200},
+        }
     if dry_run:
-        log.info("[dry_run] Would ensure collection '%s' (dim=%d)", collection_name, dim)
+        log.info(
+            "[dry_run] Would ensure collection '%s' (dim=%d)", collection_name, dim
+        )
         return None
     connections.connect(alias="default", host=host, port=port)
     if utility.has_collection(collection_name):
         coll = Collection(collection_name)
-        vec_field = next((f for f in coll.schema.fields if f.dtype == DataType.FLOAT_VECTOR), None)
+        vec_field = next(
+            (f for f in coll.schema.fields if f.dtype == DataType.FLOAT_VECTOR), None
+        )
         if vec_field and vec_field.dim != dim:
-            raise RuntimeError(f"Existing collection '{collection_name}' dim {vec_field.dim} != expected {dim}")
+            raise RuntimeError(
+                f"Existing collection '{collection_name}' dim {vec_field.dim} != expected {dim}"
+            )
         coll.load()
         return coll
 
@@ -83,18 +112,31 @@ def ensure_collection_exists_with_schema(collection_name: str, dim: int,
         FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
         FieldSchema(name="metadata", dtype=DataType.JSON),
     ]
-    schema = CollectionSchema(fields, description="RAG KB - chunks with Gemini embeddings")
+    schema = CollectionSchema(
+        fields, description="RAG KB - chunks with Gemini embeddings"
+    )
     coll = Collection(name=collection_name, schema=schema)
     coll.create_index(field_name="embedding", index_params=index_params)
     coll.load()
     log.info("Created collection '%s' (dim=%d)", collection_name, dim)
     return coll
 
-def milvus_query_checksums(collection_name: str, checksums: List[str], host: str, port: str, dry_run: bool = False) -> Set[str]:
+
+def milvus_query_checksums(
+    collection_name: str,
+    checksums: List[str],
+    host: str,
+    port: str,
+    dry_run: bool = False,
+) -> Set[str]:
     if not checksums:
         return set()
     if dry_run:
-        log.info("[dry_run] Would query checksums for '%s' (%d items)", collection_name, len(checksums))
+        log.info(
+            "[dry_run] Would query checksums for '%s' (%d items)",
+            collection_name,
+            len(checksums),
+        )
         return set()
     try:
         connections.connect(alias="default", host=host, port=port)
@@ -106,16 +148,23 @@ def milvus_query_checksums(collection_name: str, checksums: List[str], host: str
     try:
         coll = Collection(collection_name)
         quoted = ", ".join([f'"{c}"' for c in checksums])
-        expr = f'checksum in [{quoted}]'
+        expr = f"checksum in [{quoted}]"
         rows = coll.query(expr=expr, output_fields=["checksum"])
         return set(r.get("checksum") for r in rows if r.get("checksum"))
     except Exception as e:
         log.warning("Milvus checksum query failed: %s", e)
         return set()
 
-def insert_with_pymilvus(coll: Optional[Collection], ids: List[str], vectors: List[List[float]],
-                         checksums: List[str], texts: List[str], metadatas: List[Dict[str, Any]],
-                         dry_run: bool = False):
+
+def insert_with_pymilvus(
+    coll: Optional[Collection],
+    ids: List[str],
+    vectors: List[List[float]],
+    checksums: List[str],
+    texts: List[str],
+    metadatas: List[Dict[str, Any]],
+    dry_run: bool = False,
+):
     if dry_run:
         log.info("[dry_run] Would insert %d vectors", len(ids))
         return
@@ -125,26 +174,38 @@ def insert_with_pymilvus(coll: Optional[Collection], ids: List[str], vectors: Li
     coll.flush()
     coll.load()
 
+
 # -----------------------------
 # Embeddings
 # -----------------------------
 
-def embed_batch_texts(texts: List[str], model: str, batch_size: int, api_key: Optional[str], dry_run: bool = False) -> List[List[float]]:
+
+def embed_batch_texts(
+    texts: List[str],
+    model: str,
+    batch_size: int,
+    api_key: Optional[str],
+    dry_run: bool = False,
+) -> List[List[float]]:
     if dry_run:
         dim = 1536
-        return [[0.001 * ((i + 1) % 10) for _ in range(dim)] for i, _ in enumerate(texts)]
-    
+        return [
+            [0.001 * ((i + 1) % 10) for _ in range(dim)] for i, _ in enumerate(texts)
+        ]
+
     emb = get_gemini_embeddings(model, google_api_key_name)
     out: List[List[float]] = []
     for i in range(0, len(texts), batch_size):
-        batch = texts[i:i+batch_size]
+        batch = texts[i : i + batch_size]
         vs = emb.embed_documents(batch)
         out.extend(vs)
     return out
 
+
 # -----------------------------
 # Storage pipeline
 # -----------------------------
+
 
 def store_chunks_to_milvus(
     chunks: List[Dict[str, Any]],
@@ -156,13 +217,15 @@ def store_chunks_to_milvus(
     insert_batch_size: int = 64,
     dedupe_with_milvus: bool = True,
     api_key: Optional[str] = None,
-    dry_run: bool = False
+    dry_run: bool = False,
 ) -> Tuple[int, int]:
     """
     Dedupe by checksum → batch-embed → ensure schema → insert.
     Returns (skipped, inserted).
     """
-    api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    api_key = (
+        api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    )
     if not api_key and not dry_run:
         log.warning("No GEMINI_API_KEY/GOOGLE_API_KEY set (embedding may fail).")
 
@@ -175,7 +238,9 @@ def store_chunks_to_milvus(
     coll_exists = False
     try:
         if not dry_run:
-            connections.connect(alias="default", host=milvus_host, port=str(milvus_port))
+            connections.connect(
+                alias="default", host=milvus_host, port=str(milvus_port)
+            )
             coll_exists = utility.has_collection(collection_name)
     except Exception as e:
         log.warning("Milvus connection check failed: %s", e)
@@ -185,7 +250,9 @@ def store_chunks_to_milvus(
     to_process = records
     if dedupe_with_milvus and coll_exists:
         checks = [r[2] for r in records]
-        existing = milvus_query_checksums(collection_name, checks, milvus_host, str(milvus_port), dry_run=dry_run)
+        existing = milvus_query_checksums(
+            collection_name, checks, milvus_host, str(milvus_port), dry_run=dry_run
+        )
         if existing:
             filtered = []
             for rec in records:
@@ -204,7 +271,7 @@ def store_chunks_to_milvus(
     coll_obj: Optional[Collection] = None
     i = 0
     while i < len(to_process):
-        batch = to_process[i:i+insert_batch_size]
+        batch = to_process[i : i + insert_batch_size]
         ids = [r[0] for r in batch]
         texts = [r[1] for r in batch]
         checksums = [r[2] for r in batch]
@@ -215,24 +282,40 @@ def store_chunks_to_milvus(
             md.pop("text", None)
             metadatas.append(md)
 
-        vectors = embed_batch_texts(texts, model=embedding_model, batch_size=embed_batch_size, api_key=api_key, dry_run=dry_run)
+        vectors = embed_batch_texts(
+            texts,
+            model=embedding_model,
+            batch_size=embed_batch_size,
+            api_key=api_key,
+            dry_run=dry_run,
+        )
         if not vectors or len(vectors) != len(texts):
             raise RuntimeError("Embedding API returned unexpected result count")
 
         if coll_obj is None:
             dim = len(vectors[0])
-            coll_obj = ensure_collection_exists_with_schema(collection_name, dim, host=milvus_host, port=str(milvus_port), dry_run=dry_run)
+            coll_obj = ensure_collection_exists_with_schema(
+                collection_name,
+                dim,
+                host=milvus_host,
+                port=str(milvus_port),
+                dry_run=dry_run,
+            )
 
-        insert_with_pymilvus(coll_obj, ids, vectors, checksums, texts, metadatas, dry_run=dry_run)
+        insert_with_pymilvus(
+            coll_obj, ids, vectors, checksums, texts, metadatas, dry_run=dry_run
+        )
         inserted += len(ids)
         i += insert_batch_size
 
     log.info("Finished ingest: inserted=%d, skipped=%d", inserted, skipped)
     return skipped, inserted
 
+
 # -----------------------------
 # Public: End-to-end ingest
 # -----------------------------
+
 
 def ingest_pages_to_milvus(
     pages: List[Dict[str, Any]],
