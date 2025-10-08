@@ -1,0 +1,28 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.5
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: ["--profile=black"]
+  - repo: https://github.com/psf/black
+    rev: 24.4.2
+    hooks:
+      - id: black
+        language_version: python3
+  - repo: local
+    hooks:
+      - id: vulture-report
+        name: vulture dead code report
+        entry: bash
+        args:
+          - -c
+          - >-
+            vulture . | tee application/dead_code_report.txt
+        language: system
+        pass_filenames: false
+        stages: [manual]

@@ -35,4 +35,5 @@ dependencies:
       - isort 
       - black 
       - vulture
+      - pre-commit
 
