@@ -27,13 +27,20 @@ from typing import Iterable, Sequence
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REPORT_PATH = PROJECT_ROOT / "application" / "dead_code_report.txt"
 
-COMMANDS: Sequence[tuple[list[str], str]] = (
+COMMANDS: Sequence[tuple[Sequence[str], str]] = (
     (
-        ["pre-commit", "run", "--all-files"],
+        ("pre-commit", "run", "--all-files"),
         "Running formatters and linters via pre-commit",
     ),
     (
-        ["pre-commit", "run", "vulture-report", "--all-files"],
+        (
+            "pre-commit",
+            "run",
+            "--hook-stage",
+            "manual",
+            "vulture-report",
+            "--all-files",
+        ),
         (
             "Refreshing dead code report at "
             f"{REPORT_PATH.relative_to(PROJECT_ROOT)}"
@@ -62,19 +69,11 @@ def run(cmd: Sequence[str], desc: str) -> bool:
 
     print(f"\n🔹 {desc}")
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, cwd=PROJECT_ROOT)
     except subprocess.CalledProcessError:
         print(f"⚠️ Failed: {format_command(cmd)}")
         return False
     return True
-
-    for cmd, desc in commands:
-        if not run(cmd, desc):
-            print(
-                "\n⚠️ Some steps did not complete successfully. "
-                "Address the reported issues and re-run the script."
-            )
-            return 1
 
 def describe_workflow(lines: Iterable[str]) -> None:
     """Print a short explanation of the configured maintenance steps."""
