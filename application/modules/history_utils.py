@@ -3,14 +3,16 @@
 import json
 from typing import Iterable, List, Sequence
 
-from langchain.schema import HumanMessage, AIMessage, SystemMessage, BaseMessage
+from langchain.schema import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from logging_config import get_logger
 
 logger = get_logger(__name__)
 
 
-def build_chat_history_messages(raw: Iterable | Sequence | str | None) -> List[BaseMessage]:
+def build_chat_history_messages(
+    raw: Iterable | Sequence | str | None,
+) -> List[BaseMessage]:
     """Normalise various history encodings into a list of LangChain messages."""
 
     # Supported input:
@@ -33,7 +35,9 @@ def build_chat_history_messages(raw: Iterable | Sequence | str | None) -> List[B
             parsed = json.loads(raw)
             raw = parsed
         except Exception:
-            logger.warning("chat_history is a plain string and not valid JSON. Ignoring.")
+            logger.warning(
+                "chat_history is a plain string and not valid JSON. Ignoring."
+            )
             return []
 
     # Now raw should be a list (hopefully)
@@ -82,26 +86,37 @@ def build_chat_history_messages(raw: Iterable | Sequence | str | None) -> List[B
     # Defensive normalization & debug logging — ensure it's a list of BaseMessage
     chat_history_messages = msgs
     if not isinstance(chat_history_messages, list):
-        logger.warning("chat_history_messages is not a list (type=%s). Forcing to list.", type(chat_history_messages))
+        logger.warning(
+            "chat_history_messages is not a list (type=%s). Forcing to list.",
+            type(chat_history_messages),
+        )
         chat_history_messages = [HumanMessage(content=str(chat_history_messages))]
-    
+
     # Ensure every item is a BaseMessage — if not, coerce to HumanMessage
     fixed_msgs = []
     for i, item in enumerate(chat_history_messages):
         if isinstance(item, BaseMessage):
             fixed_msgs.append(item)
         else:
-            logger.warning("chat_history item %s is not BaseMessage (type=%s). Converting to HumanMessage.", i, type(item))
+            logger.warning(
+                "chat_history item %s is not BaseMessage (type=%s). Converting to HumanMessage.",
+                i,
+                type(item),
+            )
             fixed_msgs.append(HumanMessage(content=str(item)))
 
     chat_history_messages = fixed_msgs
 
     # Debug print: types and short content preview
-    logger.debug("Passing chat_history_messages to conv_chain (len=%d)", len(chat_history_messages))
+    logger.debug(
+        "Passing chat_history_messages to conv_chain (len=%d)",
+        len(chat_history_messages),
+    )
     for i, m in enumerate(chat_history_messages):
         # content may not exist on some custom objects, use getattr safely
         content = getattr(m, "content", None)
-        logger.debug("  [%d] %s — content preview: %s", i, type(m).__name__, repr(content)[:200])
+        logger.debug(
+            "  [%d] %s — content preview: %s", i, type(m).__name__, repr(content)[:200]
+        )
 
     return chat_history_messages
-
