@@ -49,6 +49,10 @@ def _clean_line(s: str) -> str:
     return s
 
 
+def _normalize_header(h: str) -> str:
+    return re.sub(r"\s+", " ", (h or "").strip())
+
+
 def _is_header(line: str) -> bool:
     """Heuristically determine whether *line* looks like a header chunk."""
 

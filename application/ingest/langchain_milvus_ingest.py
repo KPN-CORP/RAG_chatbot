@@ -12,7 +12,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from congig import google_api_key_name
+from config import google_api_key_name
 
 # Chunking
 from ingest.chunking import build_chunks_from_pages
