@@ -39,12 +39,12 @@ configure_logging()
 logger = get_logger(__name__)
 
 # ----- CONFIG -----
-# r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 app = FastAPI()
 pydantic_parser = PydanticOutputParser(pydantic_object=AnswerWithSources)
 
 # Your already-created vectorstore (LangChain Milvus wrapper)
-# vectorstore = get_vectorstore()
+vectorstore = get_vectorstore()
 
 
 # ----- Helpers (optional) -----
@@ -299,6 +299,11 @@ def chat(req: ChatReq):
     try:
         # The invoke call now passes a single dictionary with all the required keys
         result = rag_chain.invoke(invoke_payload)
+        if not result.get('sources'):
+            logger.warning("No sources found for the answer", extra={"session_id": req.session_id})
+            not_found = True
+        else:
+            not_found = False
 
     except Exception as e:
         # print full exception with context for easier debugging in logs
@@ -348,7 +353,7 @@ def chat(req: ChatReq):
     )
 
     # 11) Ensure return types match Pydantic model
-    return {"answer": assistant_text, "sources": sources_meta}
+    return {"answer": assistant_text, "sources": sources_meta, "not_found": not_found}
 
 
 def print_retrieved_docs(result: dict) -> None:

@@ -18,7 +18,7 @@ from config import google_api_key_name
 from ingest.chunking import build_chunks_from_pages
 
 # Embeddings (Gemini via LangChain)
-from models.embbedings import get_gemini_embeddings
+from models.embbedings import get_gemini_embeddings, get_huggingface_embeddings
 
 # Milvus
 from pymilvus import (
@@ -324,8 +324,8 @@ def ingest_pages_to_milvus(
     Build chunks with universal semantic grouping + (optional) long-text fallback,
     then embed & store in Milvus.
     """
-    # Embeddings object reused for grouping + fallback splitting
-    embeddings = get_gemini_embeddings(embedding_model, api_key)
+    # Embeddings object reused for grouping + fallback splitting. Use huggingface for cost.
+    embeddings = get_huggingface_embeddings(embedding_model, api_key)
 
     chunks = build_chunks_from_pages(
         pages=pages,
