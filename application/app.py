@@ -19,7 +19,7 @@ from config import (
     milvus_port,
     qa_system_prompt,
 )
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 
@@ -74,6 +74,12 @@ def _resolve_embedding_api_key() -> str:
     return ""
 
 
+def _expected_ingest_token() -> str:
+    """Return the configured ingestion upload token from the environment."""
+
+    return os.environ.get("INGEST_UPLOAD_TOKEN", "")
+
+
 def _build_document_identifier(filename: str, data: bytes) -> str:
     """Create a stable document identifier using filename and SHA-256 digest."""
 
@@ -96,8 +102,20 @@ def create_session():
 
 
 @app.post("/ingest/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(
+    file: UploadFile = File(...),
+    ingest_token: str = Header(..., alias="X-Ingest-Token"),
+):
     """Ingest a user-provided PDF document into the Milvus knowledge base."""
+
+    expected_token = _expected_ingest_token()
+    if not expected_token:
+        logger.error("Missing ingestion token configuration")
+        raise HTTPException(status_code=500, detail="Ingestion token is not configured.")
+
+    if ingest_token != expected_token:
+        logger.warning("Invalid ingestion token supplied", extra={"doc_header_present": bool(ingest_token)})
+        raise HTTPException(status_code=401, detail="Invalid ingestion token.")
 
     if file.content_type not in {"application/pdf", "application/x-pdf"}:
         raise HTTPException(status_code=400, detail="Only PDF uploads are supported.")
