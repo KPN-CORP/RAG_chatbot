@@ -1,0 +1,113 @@
+# RAG Chatbot Application Guide
+
+This repository contains experimentation notebooks and a production-ready FastAPI service under [`application/`](application/) for a Retrieval Augmented Generation (RAG) HR assistant named **Nastari**. This guide explains how to run, stop, and use the service exposed by the `application/` package.
+
+## 1. Prerequisites
+
+1. **Python environment**
+   - Python 3.10+
+   - The recommended workflow is to create a Conda environment from the provided [`environment.yml`](environment.yml) file at the repository root.
+
+   ```bash
+   conda env create -f environment.yml
+   conda activate rag-chatbot
+   ```
+
+   - If you prefer to manage packages manually (e.g., in an existing Conda env), install dependencies according to the imports in `application/` (FastAPI, Uvicorn, LangChain, Redis, pymilvus, etc.).
+
+2. **External services**
+   - **Redis** running and accessible at the URL configured in [`application/config.py`](application/config.py) (default: `redis://localhost:6379/0`).
+   - **Milvus** vector database reachable using `milvus_host` and `milvus_port` from the same config file (default: `127.0.0.1:19530`).
+
+3. **Environment variables**
+   - `GEMINI_API_KEY` (or the name specified by `google_api_key_name` in `config.py`) – used by LangChain's Gemini chat & embedding models.
+   - `INGEST_UPLOAD_TOKEN` – shared secret required when calling the document upload endpoint.
+   - Optionally, override other settings by exporting variables consumed in `application/config.py`.
+
+## 2. Running the FastAPI server
+
+1. Navigate into the `application/` directory.
+
+   ```bash
+   cd application
+   ```
+
+2. Start the API using Uvicorn (development hot-reload shown below).
+
+   ```bash
+   uvicorn app:app --reload --host 0.0.0.0 --port 8000
+   ```
+
+   The service exposes the following key endpoints:
+   - `POST /session` – create a new Redis-backed chat session.
+   - `POST /chat` – run the RAG pipeline for a question.
+   - `POST /ingest/upload` – add a PDF to Milvus for retrieval.
+
+3. Confirm the server is running by visiting the interactive docs: `http://localhost:8000/docs`.
+
+## 3. Stopping the server
+
+- Press `Ctrl+C` in the terminal where Uvicorn is running to gracefully stop the API.
+- If running as a background process (e.g., via systemd, Docker, or `nohup`), stop the process using the respective tooling (`systemctl stop`, `docker stop`, `kill <pid>`, etc.).
+
+## 4. Using the API
+
+Below is a minimal sequence using `curl`. Replace placeholders with your own values.
+
+1. **Create a session**
+
+   ```bash
+   curl -X POST http://localhost:8000/session
+   # => {"session_id": "<uuid>"}
+   ```
+
+2. **Ingest a PDF** (optional but recommended before asking questions)
+
+   ```bash
+   curl -X POST "http://localhost:8000/ingest/upload" \
+     -H "X-Ingest-Token: $INGEST_UPLOAD_TOKEN" \
+     -F "file=@/path/to/document.pdf"
+   ```
+
+   The service extracts tables and text using `ingest/pdf_with_tables.py`, generates Gemini embeddings, and stores chunks in Milvus. Duplicate chunks (same checksum) are skipped automatically.
+
+3. **Ask a question**
+
+   ```bash
+   curl -X POST http://localhost:8000/chat \
+     -H "Content-Type: application/json" \
+     -d '{
+       "session_id": "<uuid-from-session-endpoint>",
+       "question": "Apa kebijakan cuti tahunan karyawan?",
+       "debug_retrieval": false
+     }'
+   ```
+
+   The service uses Redis conversation memory, retrieves similar chunks from Milvus, feeds context to Gemini (`models/gemini-2.5-flash` by default), and returns a JSON answer with document sources.
+
+4. **Session expiry**
+
+   - Sessions are stored in Redis with a TTL (`SESSION_TTL_SECONDS` in `config.py`). After expiration, create a new session before sending further questions.
+
+## 5. Maintenance scripts
+
+The `application/` directory also contains utilities that can be invoked manually:
+
+- `clean_project.py` – housekeeping tasks such as clearing caches.
+- `modules/redis.py` – helper for managing Redis conversation memory.
+- `vectorstore/milvus_vectorstore.py` – wrapper to instantiate the Milvus vector store via LangChain.
+
+Refer to the module docstrings for advanced usage.
+
+## 6. Troubleshooting
+
+| Issue | Suggested action |
+|-------|------------------|
+| `LLM API key not configured` | Ensure `GEMINI_API_KEY` (or the configured variable name) is exported before starting the server. |
+| `Vectorstore not wired in server` | Verify Milvus is running, accessible, and initialized via `vectorstore/milvus_vectorstore.py`. |
+| `Invalid ingestion token` | Double-check the `X-Ingest-Token` header matches the server-side `INGEST_UPLOAD_TOKEN`. |
+| Redis or Milvus connection errors | Update host/port settings in `application/config.py` or corresponding environment variables. |
+
+---
+
+With the above steps, you can run, stop, and interact with the Nastari RAG assistant shipped in the `application/` package.
