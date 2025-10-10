@@ -39,12 +39,12 @@ configure_logging()
 logger = get_logger(__name__)
 
 # ----- CONFIG -----
-r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+# r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 app = FastAPI()
 pydantic_parser = PydanticOutputParser(pydantic_object=AnswerWithSources)
 
 # Your already-created vectorstore (LangChain Milvus wrapper)
-vectorstore = get_vectorstore()
+# vectorstore = get_vectorstore()
 
 
 # ----- Helpers (optional) -----
@@ -189,7 +189,7 @@ async def upload_document(
     }
 
 
-@app.post("/chat", response_model=ChatResp)
+@app.post("/ask", response_model=ChatResp)
 def chat(req: ChatReq):
     """Answer a user question using the retrieval augmented generation chain."""
 

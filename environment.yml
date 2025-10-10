@@ -13,6 +13,8 @@ dependencies:
   - pip:
       - accelerate
       - fastapi
+      - fuzzywuzzy
+      - python-Levenshtein
       - google-generativeai
       - google-genai
       - huggingface-hub
@@ -38,4 +40,5 @@ dependencies:
       - black 
       - vulture
       - pre-commit
+      - python-multipart
 

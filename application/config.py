@@ -48,8 +48,8 @@ Format output:
     }}
   ]
 }}
-- "answer" = teks jawaban ringkas dan profesional.
-- "sources" = list sumber dokumen. Jika tidak ada dokumen relevan, gunakan list kosong [].
+- "answer" = teks jawaban ringkas dan profesional; Gunakan bullet points (*) untuk merinci poin-poin utama agar mudah dibaca; Gunakan formatting Markdown (seperti *italic* atau **bold**) untuk menekankan informasi penting; Jika ada catatan atau syarat penting, tambahkan bagian "Catatan:" di akhir.
+- "sources" = list sumber dokumen. Jika tidak ada dokumen relevan, gunakan list kosong []. Jika halaman tak diketahui, "page": null.
 - Gunakan key persis seperti di atas: "answer", "sources", "filename", "page".
 """
 
