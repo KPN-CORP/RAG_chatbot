@@ -20,14 +20,14 @@ except Exception as exc:  # pragma: no cover - fallback for older LangChain vers
     from langchain.embeddings import GoogleGenerativeAIEmbeddings  # type: ignore
 
 
-def get_huggingface_embeddings(semantic_embedding_model: str) -> HuggingFaceEmbeddings:
+def get_huggingface_embeddings(semantic_embedding_model_name: str) -> HuggingFaceEmbeddings:
     """Return a CPU-friendly HuggingFace embedding model configured for semantic search."""
 
     model_kwargs = {"device": "cpu"}  # Use 'cuda' for GPU
     encode_kwargs = {"normalize_embeddings": True}
 
     embeddings = HuggingFaceEmbeddings(
-        model_name=semantic_embedding_model,
+        model_name=semantic_embedding_model_name,
         model_kwargs=model_kwargs,
         encode_kwargs=encode_kwargs,
     )
@@ -35,7 +35,7 @@ def get_huggingface_embeddings(semantic_embedding_model: str) -> HuggingFaceEmbe
 
 
 def get_gemini_embeddings(
-    embedding_model: str,
+    embedding_model_name: str,
     api_key: Optional[str] = None,
 ):
     """Return Google Gemini embeddings, attempting sensible API-key fallbacks."""
@@ -50,7 +50,7 @@ def get_gemini_embeddings(
         logger.warning("No Gemini API key available for embeddings")
     try:
         embeddings = GoogleGenerativeAIEmbeddings(
-            model=embedding_model, google_api_key=api_key_eff
+            model=embedding_model_name, google_api_key=api_key_eff
         )  # type: ignore
     except TypeError as exc:
         logger.info(
@@ -58,7 +58,7 @@ def get_gemini_embeddings(
             extra={"error": str(exc)},
         )
         embeddings = GoogleGenerativeAIEmbeddings(
-            model=embedding_model, api_key=api_key_eff
+            model=embedding_model_name, api_key=api_key_eff
         )  # type: ignore
 
     return embeddings

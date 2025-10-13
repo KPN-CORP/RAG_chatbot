@@ -80,6 +80,7 @@ def ensure_collection_exists_with_schema(
     port: str,
     index_params: Optional[dict] = None,
     dry_run: bool = False,
+    collection_description: str = "",
 ) -> Optional[Collection]:
     if index_params is None:
         index_params = {
@@ -108,7 +109,7 @@ def ensure_collection_exists_with_schema(
         FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
         FieldSchema(name="metadata", dtype=DataType.JSON),
     ]
-    schema = CollectionSchema(fields, description="RAG KB - chunks with Gemini embeddings")
+    schema = CollectionSchema(fields, description=collection_description)
     coll = Collection(name=collection_name, schema=schema)
     coll.create_index(field_name="embedding", index_params=index_params)
     coll.load()
@@ -204,12 +205,13 @@ def store_chunks_to_milvus(
     collection_name: str,
     milvus_host: str = "127.0.0.1",
     milvus_port: int = 19530,
-    embedding_model: str = "models/embedding-004",
+    embedding_model_name: str = "models/embedding-004",
     embed_batch_size: int = 32,
     insert_batch_size: int = 64,
     dedupe_with_milvus: bool = True,
     api_key: Optional[str] = None,
     dry_run: bool = False,
+    collection_description: str = "",
 ) -> Tuple[int, int]:
     """
     Dedupe by checksum → batch-embed → ensure schema → insert.
@@ -272,7 +274,7 @@ def store_chunks_to_milvus(
 
         vectors = embed_batch_texts(
             texts,
-            model=embedding_model,
+            model=embedding_model_name,
             batch_size=embed_batch_size,
             api_key=api_key,
             dry_run=dry_run,
@@ -288,6 +290,7 @@ def store_chunks_to_milvus(
                 host=milvus_host,
                 port=str(milvus_port),
                 dry_run=dry_run,
+                collection_description=collection_description
             )
 
         insert_with_pymilvus(coll_obj, ids, vectors, checksums, texts, metadatas, dry_run=dry_run)
@@ -308,9 +311,10 @@ def ingest_pages_to_milvus(
     doc_id: str,
     source: str,
     collection_name: str,
+    collection_description: str = "",
     milvus_host: str = "127.0.0.1",
     milvus_port: int = 19530,
-    embedding_model: str = "models/embedding-004",
+    embedding_model_name: str = "models/embedding-004",
     embed_batch_size: int = 32,
     insert_batch_size: int = 64,
     enable_semantic_fallback: bool = True,
@@ -325,13 +329,13 @@ def ingest_pages_to_milvus(
     then embed & store in Milvus.
     """
     # Embeddings object reused for grouping + fallback splitting. Use huggingface for cost.
-    embeddings = get_huggingface_embeddings(embedding_model, api_key)
+    chunking_embeddings = get_huggingface_embeddings(embedding_model_name, api_key)
 
     chunks = build_chunks_from_pages(
         pages=pages,
         doc_id=doc_id,
         source=source,
-        embeddings_for_semantic=embeddings,
+        embeddings_for_semantic=chunking_embeddings,
         enable_semantic_fallback=enable_semantic_fallback,
         semantic_fallback_max_chars=1000,
         sim_threshold=sim_threshold,
@@ -344,7 +348,7 @@ def ingest_pages_to_milvus(
         collection_name=collection_name,
         milvus_host=milvus_host,
         milvus_port=milvus_port,
-        embedding_model=embedding_model,
+        embedding_model_name=embedding_model_name,
         embed_batch_size=embed_batch_size,
         insert_batch_size=insert_batch_size,
         dedupe_with_milvus=True,

@@ -2,6 +2,7 @@
 milvus_host = "127.0.0.1"
 milvus_port = "19530"
 collection_name = "company_policies"  # collection name in Milvus
+collection_description = "Vector store of company policy documents and HR-related content. with Gemini embeddings"  # optional description
 
 
 REDIS_URL = "redis://localhost:6379/0"
@@ -10,8 +11,8 @@ MAX_HISTORY_MESSAGES = 20  # how many recent messages to load into memory
 
 
 gemini_chat_model = "models/gemini-2.5-flash"  # pick the chat model you want
-embedding_model = "models/gemini-embedding-001"  # embedding model for Gemini
-semantic_embedding_model = "LazarusNLP/all-indo-e5-small-v4"  # embedding model for semantic search
+embedding_model_name = "models/gemini-embedding-001"  # embedding model for Gemini
+semantic_embedding_model_name = "LazarusNLP/all-indo-e5-small-v4"  # embedding model for semantic search
 
 
 google_api_key_name = "GEMINI_API_KEY"  # environment variable name for Gemini/Google API key

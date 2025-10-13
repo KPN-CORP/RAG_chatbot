@@ -12,7 +12,8 @@ from config import (
     REDIS_URL,
     SESSION_TTL_SECONDS,
     collection_name,
-    embedding_model,
+    collection_description,
+    embedding_model_name,
     gemini_chat_model,
     google_api_key_name,
     milvus_host,
@@ -20,14 +21,14 @@ from config import (
     qa_system_prompt,
 )
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from ingest.langchain_milvus_ingest import ingest_pages_to_milvus
+from ingest.pdf_with_tables import extract_pdf_content
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 # LangChain imports (use provider wrapper)
 from langchain_google_genai import ChatGoogleGenerativeAI
 from logging_config import configure_logging, get_logger
-from ingest.langchain_milvus_ingest import ingest_pages_to_milvus
-from ingest.pdf_with_tables import extract_pdf_content
 from modules.history_utils import build_chat_history_messages
 from modules.redis import RedisConversationMemory
 from schemas.api import ChatReq, ChatResp, CreateSessionResp
@@ -114,7 +115,9 @@ async def upload_document(
         raise HTTPException(status_code=500, detail="Ingestion token is not configured.")
 
     if ingest_token != expected_token:
-        logger.warning("Invalid ingestion token supplied", extra={"doc_header_present": bool(ingest_token)})
+        logger.warning(
+            "Invalid ingestion token supplied", extra={"doc_header_present": bool(ingest_token)}
+        )
         raise HTTPException(status_code=401, detail="Invalid ingestion token.")
 
     if file.content_type not in {"application/pdf", "application/x-pdf"}:
@@ -161,8 +164,9 @@ async def upload_document(
             collection_name=collection_name,
             milvus_host=milvus_host,
             milvus_port=milvus_port,
-            embedding_model=embedding_model,
+            embedding_model_name=embedding_model_name,
             api_key=api_key or None,
+            collection_description=collection_description
         )
     except Exception as exc:  # pragma: no cover - ingestion pipeline errors
         logger.exception(
@@ -299,7 +303,7 @@ def chat(req: ChatReq):
     try:
         # The invoke call now passes a single dictionary with all the required keys
         result = rag_chain.invoke(invoke_payload)
-        if not result.get('sources'):
+        if not result.get("sources"):
             logger.warning("No sources found for the answer", extra={"session_id": req.session_id})
             not_found = True
         else:

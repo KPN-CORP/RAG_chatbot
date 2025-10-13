@@ -7,7 +7,7 @@ from typing import Optional
 
 from config import (
     collection_name,
-    embedding_model,
+    embedding_model_name,
     google_api_key_name,
     milvus_host,
     milvus_port,
@@ -45,7 +45,7 @@ def get_vectorstore() -> Milvus:
     connections.connect(alias="default", host=milvus_host, port=milvus_port)
 
     api_key = _resolve_api_key(os.environ.get(google_api_key_name))
-    embeddings = get_gemini_embeddings(embedding_model, api_key)
+    embeddings = get_gemini_embeddings(embedding_model_name, api_key)
 
     vectorstore_kwargs = {
         "embedding_function": embeddings,
