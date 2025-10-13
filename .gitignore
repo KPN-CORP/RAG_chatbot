@@ -12,3 +12,4 @@ chat_history.db
 node_modules/
 /github.py
 *.ipynb
+application/volumes/*

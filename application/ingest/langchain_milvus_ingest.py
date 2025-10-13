@@ -186,7 +186,7 @@ def embed_batch_texts(
         dim = 1536
         return [[0.001 * ((i + 1) % 10) for _ in range(dim)] for i, _ in enumerate(texts)]
 
-    emb = get_gemini_embeddings(model, google_api_key_name)
+    emb = get_gemini_embeddings(model, api_key)
     out: List[List[float]] = []
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
