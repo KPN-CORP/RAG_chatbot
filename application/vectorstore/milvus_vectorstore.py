@@ -16,7 +16,9 @@ from langchain_milvus import Milvus
 from logging_config import get_logger
 from models.embbedings import get_gemini_embeddings
 from pymilvus import connections
+from dotenv import load_dotenv
 
+load_dotenv()
 logger = get_logger(__name__)
 
 

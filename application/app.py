@@ -35,6 +35,10 @@ from schemas.api import ChatReq, ChatResp, CreateSessionResp
 from schemas.rag_outputs import AnswerWithSources, format_docs_with_metadata
 from vectorstore.milvus_vectorstore import get_vectorstore
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Configure logging once when the module is imported.
 configure_logging()
 logger = get_logger(__name__)
