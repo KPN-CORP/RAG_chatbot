@@ -100,3 +100,8 @@ volumes:
   minio-data:
   milvus-data:
   redis-data:
+
+# how to run:
+# docker compose pull etcd
+# docker compose pull         # should complete for all services now
+# docker compose up -d

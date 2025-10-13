@@ -6,7 +6,7 @@ load_dotenv()
 redis_password = os.environ.get("REDIS_PASSWORD")
 redis_password =  redis_password+"@" if redis_password else None
 
-milvus_host = "127.0.0.1"
+milvus_host = "0.0.0.1"
 milvus_port = "19530"
 collection_name = "company_policies"  # collection name in Milvus
 collection_description = "Vector store of company policy documents and HR-related content. with Gemini embeddings"  # optional description
