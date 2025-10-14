@@ -4,6 +4,7 @@ import hashlib
 import os
 import tempfile
 import uuid
+import json
 from pathlib import Path
 
 import redis
@@ -20,11 +21,14 @@ from config import (
     milvus_port,
     qa_system_prompt,
 )
+from modules.utils import extract_json_string
+
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from ingest.langchain_milvus_ingest import ingest_pages_to_milvus
 from ingest.pdf_with_tables import extract_pdf_content
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnableLambda
 
 # LangChain imports (use provider wrapper)
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -93,6 +97,12 @@ def _build_document_identifier(filename: str, data: bytes) -> str:
     digest = hashlib.sha256(data).hexdigest()[:16]
     return f"{safe_name or 'document'}-{digest}"
 
+def extractor_wrapper(msg):
+    default_json = json.dumps({"answer": "", "sources": []}, ensure_ascii=False)
+    # msg may be a string or a ChatMessage; normalize to text
+    text = getattr(msg, "content", msg)
+    return extract_json_string(text) or default_json
+
 
 # ----- Endpoints -----
 @app.post("/session", response_model=CreateSessionResp)
@@ -134,8 +144,9 @@ async def upload_document(
     doc_id = _build_document_identifier(file.filename or "document.pdf", data)
     logger.info(
         "Received document upload",
-        extra={"filename": file.filename, "doc_id": doc_id, "size_bytes": len(data)},
+        extra={"upload_filename": file.filename, "content_type": file.content_type}
     )
+
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(data)
@@ -146,7 +157,7 @@ async def upload_document(
     except Exception as exc:  # pragma: no cover - pdf parsing issues
         logger.exception(
             "Failed to extract PDF content",
-            extra={"filename": file.filename, "doc_id": doc_id},
+            extra={"upload_filename": file.filename, "doc_id": doc_id}
         )
         raise HTTPException(status_code=500, detail=f"Failed to read PDF: {exc}") from exc
     finally:
@@ -175,7 +186,7 @@ async def upload_document(
     except Exception as exc:  # pragma: no cover - ingestion pipeline errors
         logger.exception(
             "Failed to ingest document",
-            extra={"filename": file.filename, "doc_id": doc_id},
+            extra={"upload_filename": file.filename, "doc_id": doc_id},
         )
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
 
@@ -183,7 +194,7 @@ async def upload_document(
         "Document ingestion completed",
         extra={
             "doc_id": doc_id,
-            "filename": file.filename,
+            "upload_filename": file.filename,
             "skipped_chunks": skipped,
             "inserted_chunks": inserted,
         },
@@ -271,6 +282,7 @@ def chat(req: ChatReq):
             }
             | qa_prompt
             | llm
+            | RunnableLambda(extractor_wrapper)
             | pydantic_parser
         )
     else:
@@ -286,6 +298,7 @@ def chat(req: ChatReq):
             }
             | qa_prompt
             | llm
+            | RunnableLambda(extractor_wrapper)
             | pydantic_parser
         )
 
@@ -307,7 +320,7 @@ def chat(req: ChatReq):
     try:
         # The invoke call now passes a single dictionary with all the required keys
         result = rag_chain.invoke(invoke_payload)
-        if not result.get("sources"):
+        if not result.sources:
             logger.warning("No sources found for the answer", extra={"session_id": req.session_id})
             not_found = True
         else:
@@ -350,7 +363,8 @@ def chat(req: ChatReq):
 
     # 10) Save the turn into Redis after successful call: user then assistant
     mem.add_user_message(req.question)
-    mem.add_assistant_message(assistant_text, sources=sources_meta)
+    sources_dicts = [s.model_dump() for s in sources_meta]   
+    mem.add_assistant_message(assistant_text, sources=sources_dicts)
     logger.info(
         "Chat response generated",
         extra={

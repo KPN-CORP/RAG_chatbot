@@ -354,4 +354,5 @@ def ingest_pages_to_milvus(
         dedupe_with_milvus=True,
         api_key=api_key,
         dry_run=dry_run,
+        collection_description=collection_description
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from logging.config import dictConfig
+from config import LOG_LEVEL
 
 DEFAULT_LOG_LEVEL = "INFO"
 
@@ -69,7 +70,7 @@ def configure_logging() -> None:
     application logs.
     """
 
-    log_level = os.getenv("APP_LOG_LEVEL", DEFAULT_LOG_LEVEL).upper()
+    log_level = LOG_LEVEL.upper() if LOG_LEVEL else DEFAULT_LOG_LEVEL
     dictConfig(_build_logging_config(log_level))
 
 

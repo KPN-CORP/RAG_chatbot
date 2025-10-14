@@ -1,16 +1,17 @@
 import os
 from dotenv import load_dotenv
 
+LOG_LEVEL = "DEBUG" # options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+
 load_dotenv()
 
 redis_password = os.environ.get("REDIS_PASSWORD")
-redis_password =  redis_password+"@" if redis_password else None
+redis_password =  redis_password+"@" if redis_password else ''
 
 milvus_host = "127.0.0.1"
 milvus_port = "19530"
 collection_name = "company_policies"  # collection name in Milvus
 collection_description = "Vector store of company policy documents and HR-related content. with Gemini embeddings"  # optional description
-
 
 REDIS_URL = f"redis://{redis_password}localhost:6379/0"
 SESSION_TTL_SECONDS = 60 * 60 * 24 * 7  # optional TTL for session keys
@@ -44,7 +45,7 @@ Aturan utama:
      atau arahkan ke dokumen relevan yang tersedia.
 3. Selalu sertakan sumber dokumen jika jawabanmu berdasarkan dokumen.
 
-Format output:
+Format output WAJIB:
 - Berikan output **HANYA** dalam format JSON valid, tanpa teks tambahan.
 - Struktur JSON yang wajib digunakan:
 {{

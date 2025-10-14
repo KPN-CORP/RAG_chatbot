@@ -1,17 +1,26 @@
 # RAG/schemas/rag_outputs.py
 
-from typing import List
+from typing import Optional, List
 
 from langchain_core.documents import Document
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class Source(BaseModel):
     """Data model for a single source document."""
 
     filename: str = Field(description="The name of the source PDF file.")
-    page: int = Field(description="The page number from the source file.")
-
+    page: Optional[int] = Field(description="The page number from the source file.")
+    # Optional: coerce common bad values
+    @field_validator("page", mode="before")
+    @classmethod
+    def coerce_page(cls, v):
+        if v in (None, "", "N/A", "n/a", "na", "-"):
+            return None
+        if isinstance(v, str) and v.isdigit():
+            return int(v)
+        return v
+    
 
 class AnswerWithSources(BaseModel):
     """The final structured output of the RAG chain."""
