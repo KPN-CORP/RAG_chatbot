@@ -315,6 +315,7 @@ def ingest_pages_to_milvus(
     milvus_host: str = "127.0.0.1",
     milvus_port: int = 19530,
     embedding_model_name: str = "models/embedding-004",
+    semantic_embedding_model_name: str = "LazarusNLP/all-indo-e5-small-v4",
     embed_batch_size: int = 32,
     insert_batch_size: int = 64,
     enable_semantic_fallback: bool = True,
@@ -329,7 +330,7 @@ def ingest_pages_to_milvus(
     then embed & store in Milvus.
     """
     # Embeddings object reused for grouping + fallback splitting. Use huggingface for cost.
-    chunking_embeddings = get_huggingface_embeddings(embedding_model_name, api_key)
+    chunking_embeddings = get_huggingface_embeddings(semantic_embedding_model_name)
 
     chunks = build_chunks_from_pages(
         pages=pages,

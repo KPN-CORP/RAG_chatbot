@@ -15,6 +15,7 @@ from config import (
     collection_name,
     collection_description,
     embedding_model_name,
+    semantic_embedding_model_name,
     gemini_chat_model,
     google_api_key_name,
     milvus_host,
@@ -180,6 +181,7 @@ async def upload_document(
             milvus_host=milvus_host,
             milvus_port=milvus_port,
             embedding_model_name=embedding_model_name,
+            semantic_embedding_model_name=semantic_embedding_model_name,
             api_key=api_key or None,
             collection_description=collection_description
         )
@@ -332,6 +334,7 @@ def chat(req: ChatReq):
             "Error invoking chain",
             extra={"session_id": req.session_id, "history": raw_history},
         )
+        not_found = True
         # Log/raise more helpful error in production
         raise HTTPException(status_code=500, detail=f"LLM/chain error: {e}")
 
@@ -358,21 +361,29 @@ def chat(req: ChatReq):
             )
 
     # Pull assistant answer and source documents
-    assistant_text = result.answer or result.result or ""
-    sources_meta = result.sources or []
+    try:
+        assistant_text = result.answer or result.result or ""
+        sources_meta = result.sources or []
 
-    # 10) Save the turn into Redis after successful call: user then assistant
-    mem.add_user_message(req.question)
-    sources_dicts = [s.model_dump() for s in sources_meta]   
-    mem.add_assistant_message(assistant_text, sources=sources_dicts)
-    logger.info(
-        "Chat response generated",
-        extra={
-            "session_id": req.session_id,
-            "has_sources": bool(sources_meta),
-            "answer_preview": assistant_text[:100],
-        },
-    )
+        # 10) Save the turn into Redis after successful call: user then assistant
+        mem.add_user_message(req.question)
+        sources_dicts = [s.model_dump() for s in sources_meta]   
+        mem.add_assistant_message(assistant_text, sources=sources_dicts)
+        logger.info(
+            "Chat response generated",
+            extra={
+                "session_id": req.session_id,
+                "has_sources": bool(sources_meta),
+                "answer_preview": assistant_text[:100],
+            },
+        )
+    except Exception as exc:  # pragma: no cover - redis save errors
+        assistant_text = ''
+        sources_meta = []
+        logger.exception(
+            f"Failed to save chat turn to Redis. Result: {result}",
+            extra={"session_id": req.session_id, "error": str(exc)},
+        )
 
     # 11) Ensure return types match Pydantic model
     return {"answer": assistant_text, "sources": sources_meta, "not_found": not_found}
