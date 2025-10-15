@@ -1,7 +1,7 @@
 import os
 from dotenv import load_dotenv
 
-LOG_LEVEL = "DEBUG" # options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+LOG_LEVEL = "ERROR" # options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 load_dotenv()
 

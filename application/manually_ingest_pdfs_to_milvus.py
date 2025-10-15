@@ -7,15 +7,15 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 load_dotenv()
-folder_path = Path('assets')
-collection_name = "Company_Policies"
+folder_path = Path('../assets')
 from config import (
     milvus_host,
     milvus_port,
     embedding_model_name,
     semantic_embedding_model_name,  
     collection_description,
-    google_api_key_name
+    google_api_key_name,
+    collection_name
 )
 api_key = os.getenv(google_api_key_name)  
 
@@ -23,7 +23,7 @@ api_key = os.getenv(google_api_key_name)
 for pdf_path in folder_path.glob("*.pdf"):
     # 1) Read file bytes (this replaces `data = await file.read()` from your API route)
     data = pdf_path.read_bytes()
-
+    print("Processing", pdf_path.name)
     # 2) Build a stable document ID the same way your API does
     doc_id = _build_document_identifier(pdf_path.name or "document.pdf", data)
 
