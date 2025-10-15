@@ -4,9 +4,10 @@ from ingest.pdf_with_tables import extract_pdf_content
 from modules.utils import _build_document_identifier
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 
 load_dotenv()
-folder_path = 'assets'  # Ganti dengan path folder yang berisi file PDF
+folder_path = Path('assets')
 collection_name = "Company_Policies"
 from config import (
     milvus_host,
@@ -44,3 +45,4 @@ for pdf_path in folder_path.glob("*.pdf"):
     )
 
     print(f"[{pdf_path.name}] inserted={inserted} skipped={skipped}")
+    
