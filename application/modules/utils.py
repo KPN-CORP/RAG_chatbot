@@ -6,6 +6,7 @@ import re
 from logging_config import get_logger
 from typing import Optional, Dict, Any
 from pathlib import Path
+import hashlib
 # from typing import List
 
 
@@ -47,7 +48,13 @@ def extract_json_string(s: str) -> Optional[str]:
 #     m = re.search(r"(\{[\s\S]*\})\s*$", t)
 #     return m.group(1).strip() if m else t.strip()
 
-    
+def _build_document_identifier(filename: str, data: bytes) -> str:
+    """Create a stable document identifier using filename and SHA-256 digest."""
+
+    name = Path(filename).stem if filename else "document"
+    safe_name = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in name)
+    digest = hashlib.sha256(data).hexdigest()[:16]
+    return f"{safe_name or 'document'}-{digest}"
 
 def unwrap_meta(meta: dict) -> dict:
     # Flatten one level of nested 'metadata'

@@ -1,11 +1,9 @@
 """FastAPI application entry point exposing chat and session endpoints."""
 
-import hashlib
 import os
 import tempfile
 import uuid
 import json
-from pathlib import Path
 
 import redis
 from config import (
@@ -22,7 +20,7 @@ from config import (
     milvus_port,
     qa_system_prompt,
 )
-from modules.utils import extract_json_string, unwrap_meta, meta_filename, meta_page
+from modules.utils import extract_json_string, meta_filename, meta_page, _build_document_identifier
 
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from ingest.langchain_milvus_ingest import ingest_pages_to_milvus
@@ -88,15 +86,6 @@ def _expected_ingest_token() -> str:
     """Return the configured ingestion upload token from the environment."""
 
     return os.environ.get("INGEST_UPLOAD_TOKEN", "")
-
-
-def _build_document_identifier(filename: str, data: bytes) -> str:
-    """Create a stable document identifier using filename and SHA-256 digest."""
-
-    name = Path(filename).stem if filename else "document"
-    safe_name = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in name)
-    digest = hashlib.sha256(data).hexdigest()[:16]
-    return f"{safe_name or 'document'}-{digest}"
 
 def extractor_wrapper(msg):
     default_json = json.dumps({"answer": "", "sources": []}, ensure_ascii=False)
