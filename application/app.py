@@ -22,7 +22,7 @@ from config import (
     milvus_port,
     qa_system_prompt,
 )
-from modules.utils import extract_json_string
+from modules.utils import extract_json_string, unwrap_meta, meta_filename, meta_page
 
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from ingest.langchain_milvus_ingest import ingest_pages_to_milvus
@@ -241,6 +241,13 @@ def chat(req: ChatReq):
         # any downstream logging/inspection in this function.
         try:
             retrieved_docs = retriever.invoke(req.question) or []
+            for i, d in enumerate(retrieved_docs, 1):
+                logger.debug({
+                    "i": i,
+                    "filename": meta_filename(d.metadata),
+                    "page": meta_page(d.metadata),
+                    "keys": list(d.metadata.keys())
+                })
         except Exception:
             logger.exception("Failed to retrieve documents", extra={"session_id": req.session_id})
             raise HTTPException(status_code=500, detail="Retriever error while fetching documents.")
@@ -322,11 +329,15 @@ def chat(req: ChatReq):
     try:
         # The invoke call now passes a single dictionary with all the required keys
         result = rag_chain.invoke(invoke_payload)
-        if not result.sources:
-            logger.warning("No sources found for the answer", extra={"session_id": req.session_id})
+        logger.debug(f"RAG chain invoked. Result: {result}", extra={"session_id": req.session_id})
+        try:
+            if not result.sources:
+                logger.warning("No sources found for the answer", extra={"session_id": req.session_id})
+                not_found = True
+            else:
+                not_found = False
+        except:
             not_found = True
-        else:
-            not_found = False
 
     except Exception as e:
         # print full exception with context for easier debugging in logs
@@ -342,17 +353,7 @@ def chat(req: ChatReq):
     if debug_retrieval:
         if retrieved_docs:
             logger.debug(
-                "Retrieved documents",
-                extra={
-                    "session_id": req.session_id,
-                    "retrieved_docs": [
-                        {
-                            "filename": doc.metadata.get("filename", "N/A"),
-                            "page": doc.metadata.get("page", "N/A"),
-                        }
-                        for doc in retrieved_docs
-                    ],
-                },
+                f"Retrieved documents{formatted_context}"
             )
         else:
             logger.debug(

@@ -1,5 +1,6 @@
 # RAG/schemas/rag_outputs.py
 
+from pathlib import Path
 from typing import Optional, List
 
 from langchain_core.documents import Document
@@ -33,24 +34,47 @@ class AnswerWithSources(BaseModel):
 
 def format_docs_with_metadata(docs: List[Document]) -> str:
     """
-    Formats documents to include their content and metadata for the LLM.
+    Format retrieved docs into a readable context string, showing real filename/page
+    even when your metadata is nested under 'metadata'.
     """
-    formatted_strings = []
-    for i, doc in enumerate(docs):
-        # Safely get metadata, providing defaults if keys are missing
-        filename = doc.metadata.get("filename", "N/A")
-        page = doc.metadata.get("page", "N/A")
 
-        # Create a detailed block for each source
-        doc_string = (
-            f"--- Source {i+1} ---\n"
-            f"Filename: {filename}\n"
-            f"Page: {page}\n"
-            f"Content: {doc.page_content}"
-        )
-        formatted_strings.append(doc_string)
-
-    if not formatted_strings:
+    if not docs:
         return "No relevant documents found."
 
-    return "\n\n".join(formatted_strings)
+    def unwrap_meta(meta: dict) -> dict:
+        # Flatten one level if there's an inner "metadata" dict
+        if not meta:
+            return {}
+        inner = meta.get("metadata") or {}
+        flat = {k: v for k, v in meta.items() if k != "metadata"}
+        flat.update(inner)
+        return flat
+
+    parts = []
+    for i, d in enumerate(docs, 1):
+        m = unwrap_meta(d.metadata)
+
+        # Filename: prefer explicit filename; else basename of source/path/file_name
+        src = m.get("filename") or m.get("source") or m.get("path") or m.get("file_name")
+        filename = Path(src).name if isinstance(src, str) and src else "N/A"
+
+        # Page: accept common variants
+        page = m.get("page") or m.get("page_number") or m.get("pagenum")
+        page_str = str(page) if page is not None else "N/A"
+
+        breadcrumb = m.get("breadcrumb")
+        element_type = m.get("element_type")
+
+        block = [
+            f"--- Source {i} ---",
+            f"Filename: {filename}",
+            f"Page: {page_str}",
+        ]
+        if breadcrumb:
+            block.append(f"Breadcrumb: {breadcrumb}")
+        if element_type:
+            block.append(f"Type: {element_type}")
+        block.append(f"Content: {d.page_content}")
+        parts.append("\n".join(block))
+
+    return "\n\n".join(parts)

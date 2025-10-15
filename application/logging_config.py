@@ -9,55 +9,50 @@ from config import LOG_LEVEL
 
 DEFAULT_LOG_LEVEL = "INFO"
 
+# logging_config.py
+import logging
+
+class SafeExtraFormatter(logging.Formatter):
+    def __init__(self, *args, default_extras=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.default_extras = default_extras or {}
+
+    def format(self, record):
+        for k, v in self.default_extras.items():
+            if not hasattr(record, k):
+                setattr(record, k, v)
+        return super().format(record)
+    
 
 def _build_logging_config(log_level: str) -> dict:
-    """Return the dictionary configuration used by :func:`configure_logging`."""
-
+    mod = __name__  # resolves to e.g. "application.logging_config" or "logging_config"
     return {
         "version": 1,
         "disable_existing_loggers": False,
         "formatters": {
             "standard": {
-                "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                "()": f"{mod}.SafeExtraFormatter",
+                # include the fields you want to see
+                "format": "%(asctime)s - %(levelname)s - %(name)s - sid=%(session_id)s - docs=%(retrieved_docs)s - %(message)s",
+                # defaults so other log lines (without extras) don't crash
+                "default_extras": {"session_id": "-", "retrieved_docs": "-"},
             },
-            "uvicorn": {
-                "format": "%(asctime)s - %(levelname)s - %(message)s",
-            },
+            "uvicorn": {"format": "%(asctime)s - %(levelname)s - %(message)s"},
         },
         "handlers": {
-            "console": {
-                "class": "logging.StreamHandler",
-                "formatter": "standard",
-            },
-            "uvicorn": {
-                "class": "logging.StreamHandler",
-                "formatter": "uvicorn",
-            },
+            "console": {"class": "logging.StreamHandler", "formatter": "standard"},
+            "uvicorn": {"class": "logging.StreamHandler", "formatter": "uvicorn"},
         },
         "loggers": {
-            "uvicorn": {
-                "handlers": ["uvicorn"],
-                "level": log_level,
-                "propagate": False,
-            },
-            "uvicorn.error": {
-                "handlers": ["uvicorn"],
-                "level": log_level,
-                "propagate": False,
-            },
-            "uvicorn.access": {
-                "handlers": ["uvicorn"],
-                "level": log_level,
-                "propagate": False,
-            },
-            "application": {
-                "handlers": ["console"],
-                "level": log_level,
-                "propagate": False,
-            },
+            "uvicorn":        {"handlers": ["uvicorn"], "level": log_level, "propagate": False},
+            "uvicorn.error":  {"handlers": ["uvicorn"], "level": log_level, "propagate": False},
+            "uvicorn.access": {"handlers": ["uvicorn"], "level": log_level, "propagate": False},
+            "application":    {"handlers": ["console"], "level": log_level, "propagate": False},
         },
         "root": {"handlers": ["console"], "level": log_level},
     }
+
+
 
 
 def configure_logging() -> None:
