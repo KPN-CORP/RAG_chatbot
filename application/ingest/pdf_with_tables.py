@@ -4,6 +4,9 @@ from typing import Any, Iterable, List, Tuple
 
 import pdfplumber
 from fuzzywuzzy import fuzz, process
+from logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def bbox_intersects(a, b):
@@ -206,26 +209,29 @@ def check_triple_header(table_data):
     """
     Analyzes a table's structure and returns its type.
     """
-    if len(table_data) < 2:
-        return False  # or "too_small"
+    try:
+        if len(table_data) < 2:
+            return False  # or "too_small"
 
-    header_row_2 = table_data[1]
-    header_row_3 = table_data[2]
+        header_row_2 = table_data[1]
+        header_row_3 = table_data[2]
 
-    # Heuristic for the complex table:
-    # Does the third row have non-None values under None values in the second?
-    # This is a strong sign of a merged, hierarchical header.
+        # Heuristic for the complex table:
+        # Does the third row have non-None values under None values in the second?
+        # This is a strong sign of a merged, hierarchical header.
 
-    for i, item in enumerate(header_row_2):
-        #         print('item:', item, "below:", header_row_3[i])
-        if item is None and header_row_3[i] is not None and i > 0:
-            #             print('   ^True')
-            return True
+        for i, item in enumerate(header_row_2):
+            #         print('item:', item, "below:", header_row_3[i])
+            if item is None and header_row_3[i] is not None and i > 0:
+                #             print('   ^True')
+                return True
 
-    # Heuristic for a simple table:
-    # The first row is full and the second row looks like data.
-    if all(isinstance(h, str) for h in header_row_2):
-        return False
+        # Heuristic for a simple table:
+        # The first row is full and the second row looks like data.
+        if all(isinstance(h, str) for h in header_row_2):
+            return False
+    except Exception as e:
+        logger.debug(f"Error in check_triple_header: {e}")
 
     return False  # Default fallback
 
@@ -345,7 +351,11 @@ def check_and_fix_nested_tables(pdf_pages):
             for i, dct in enumerate(page["tables"]):
                 if dct["table_dct"]:
                     table = dct["table_dct"]
-                    fixed_table = fix_nested_table(table, tables, tables_flatted)
+                    try:
+                        fixed_table = fix_nested_table(table, tables, tables_flatted)
+                    except Exception as e:
+                        logger.debug(f"Error in fix_nested_table for page {page_idx+1}, table {i}: {e}")
+                        fixed_table = table  # fallback to original if error
                 pdf_pages[page_idx]["tables"][i]["table_dct"] = fixed_table
     return pdf_pages
 
@@ -362,16 +372,25 @@ def change_table_format(pdf_pages):
                     )
 
                     table = clean_table(dct["table_dct"])
-
-                    if is_triple_header:
-                        records = process_triple_header_table(dct["table_dct"])
-                    elif is_double_header:
-                        records = process_double_header_table(dct["table_dct"])
-                    else:
-                        headers = table[0]
-                        data_rows = table[1:]
-                        # Use a list comprehension to build the list of dictionaries
-                        records = [dict(zip(headers, row)) for row in data_rows]
+                    try:
+                        if is_triple_header:
+                            records = process_triple_header_table(dct["table_dct"])
+                        elif is_double_header:
+                            records = process_double_header_table(dct["table_dct"])
+                        else:
+                            headers = table[0]
+                            data_rows = table[1:]
+                            # Use a list comprehension to build the list of dictionaries
+                            records = [dict(zip(headers, row)) for row in data_rows]
+                    except Exception as e:
+                        logger.debug(f"Error in change_table_format for page {page_idx+1}, table {i}: {e}")
+                        try:
+                            headers = table[0]
+                            data_rows = table[1:]
+                            records = [dict(zip(headers, row)) for row in data_rows]
+                        except Exception as e2:
+                            logger.debug(f"  Fallback also failed: {e2}")
+                            records = [{'table':table}]  # fallback to original table if error
                 pdf_pages[page_idx]["tables"][i]["table_dct"] = records
     return pdf_pages
 

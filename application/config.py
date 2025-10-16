@@ -14,7 +14,7 @@ collection_name = "company_policies"  # collection name in Milvus
 collection_description = "Vector store of company policy documents and HR-related content. with Gemini embeddings"  # optional description
 
 REDIS_URL = f"redis://{redis_password}localhost:6379/0"
-SESSION_TTL_SECONDS = # 60 * 60 * 24 * 7  # optional TTL for session keys
+SESSION_TTL_SECONDS = None # 60 * 60 * 24 * 7  # optional TTL for session keys
 MAX_HISTORY_MESSAGES = 20  # how many recent messages to load into memory
 
 
