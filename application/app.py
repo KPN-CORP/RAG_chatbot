@@ -101,7 +101,8 @@ def create_session():
 
     sid = str(uuid.uuid4())
     r.hset(_session_meta_key(sid), mapping={"created_at": str(__import__("time").time())})
-    r.expire(_session_meta_key(sid), SESSION_TTL_SECONDS)
+    if SESSION_TTL_SECONDS:
+        r.expire(_session_meta_key(sid), SESSION_TTL_SECONDS)
     logger.info("Created new chat session", extra={"session_id": sid})
     return {"session_id": sid}
 
