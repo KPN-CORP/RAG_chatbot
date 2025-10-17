@@ -3,9 +3,11 @@
 import os
 import tempfile
 import uuid
+import time
 import json
 
 import redis
+from typing import Optional
 from config import (
     MAX_HISTORY_MESSAGES,
     REDIS_URL,
@@ -65,9 +67,6 @@ def session_exists(sid: str) -> bool:
 
     return r.exists(_session_meta_key(sid)) == 1
 
-
-
-
 def _expected_ingest_token() -> str:
     """Return the configured ingestion upload token from the environment."""
 
@@ -79,17 +78,38 @@ def extractor_wrapper(msg):
     text = getattr(msg, "content", msg)
     return extract_json_string(text) or default_json
 
+def _parse_ttl(value) -> Optional[int]:
+    """Return a valid TTL int (>0) or None."""
+    if value is None:
+        return None
+    try:
+        ttl = int(str(value).strip())
+        return ttl if ttl > 0 else None
+    except (TypeError, ValueError):
+        return None
+
 
 # ----- Endpoints -----
 @app.post("/session", response_model=CreateSessionResp)
 def create_session():
     """Create a new chat session backed by Redis."""
-
     sid = str(uuid.uuid4())
-    r.hset(_session_meta_key(sid), mapping={"created_at": str(__import__("time").time())})
-    if SESSION_TTL_SECONDS:
-        r.expire(_session_meta_key(sid), SESSION_TTL_SECONDS)
-    logger.info("Created new chat session", extra={"session_id": sid})
+    key = _session_meta_key(sid)
+    created_at = int(time.time())
+    ttl = _parse_ttl(SESSION_TTL_SECONDS)
+
+    try:
+        # Do HSET (+ optional EXPIRE) atomically
+        pipe = r.pipeline()
+        pipe.hset(key, mapping={"created_at": str(created_at)})
+        if ttl is not None:
+            pipe.expire(key, ttl)
+        pipe.execute()
+    except Exception:
+        logger.exception("Failed to create chat session", extra={"session_id": sid})
+        raise HTTPException(status_code=500, detail="Failed to create session")
+
+    logger.info("Created new chat session", extra={"session_id": sid, "ttl": ttl})
     return {"session_id": sid}
 
 
