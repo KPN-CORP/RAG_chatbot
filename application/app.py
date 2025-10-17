@@ -12,8 +12,6 @@ from config import (
     SESSION_TTL_SECONDS,
     collection_name,
     collection_description,
-    embedding_model_name,
-    semantic_embedding_model_name,
     gemini_chat_model,
     google_api_key_name,
     milvus_host,
@@ -68,18 +66,6 @@ def session_exists(sid: str) -> bool:
     return r.exists(_session_meta_key(sid)) == 1
 
 
-def _resolve_embedding_api_key() -> str:
-    """Fetch the Gemini embedding API key using known environment fallbacks."""
-
-    candidates = [
-        os.environ.get(google_api_key_name),
-        os.environ.get("GEMINI_API_KEY"),
-        os.environ.get("GOOGLE_API_KEY"),
-    ]
-    for value in candidates:
-        if value:
-            return value
-    return ""
 
 
 def _expected_ingest_token() -> str:
@@ -160,7 +146,7 @@ async def upload_document(
     if not pages:
         raise HTTPException(status_code=400, detail="No readable content found in PDF.")
 
-    api_key = _resolve_embedding_api_key()
+
 
     try:
         skipped, inserted = ingest_pages_to_milvus(
@@ -170,9 +156,6 @@ async def upload_document(
             collection_name=collection_name,
             milvus_host=milvus_host,
             milvus_port=milvus_port,
-            embedding_model_name=embedding_model_name,
-            semantic_embedding_model_name=semantic_embedding_model_name,
-            api_key=api_key or None,
             collection_description=collection_description
         )
     except Exception as exc:  # pragma: no cover - ingestion pipeline errors

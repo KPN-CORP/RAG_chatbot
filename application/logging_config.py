@@ -25,16 +25,14 @@ class SafeExtraFormatter(logging.Formatter):
     
 
 def _build_logging_config(log_level: str) -> dict:
-    mod = __name__  # resolves to e.g. "application.logging_config" or "logging_config"
+    mod = __name__
     return {
         "version": 1,
         "disable_existing_loggers": False,
         "formatters": {
             "standard": {
                 "()": f"{mod}.SafeExtraFormatter",
-                # include the fields you want to see
                 "format": "%(asctime)s - %(levelname)s - %(name)s - sid=%(session_id)s - docs=%(retrieved_docs)s - %(message)s",
-                # defaults so other log lines (without extras) don't crash
                 "default_extras": {"session_id": "-", "retrieved_docs": "-"},
             },
             "uvicorn": {"format": "%(asctime)s - %(levelname)s - %(message)s"},
@@ -48,9 +46,13 @@ def _build_logging_config(log_level: str) -> dict:
             "uvicorn.error":  {"handlers": ["uvicorn"], "level": log_level, "propagate": False},
             "uvicorn.access": {"handlers": ["uvicorn"], "level": log_level, "propagate": False},
             "application":    {"handlers": ["console"], "level": log_level, "propagate": False},
+
+            # 🔇 quiet down pdfminer (and all its children)
+            "pdfminer": {"level": "WARNING", "propagate": False},
         },
         "root": {"handlers": ["console"], "level": log_level},
     }
+
 
 
 

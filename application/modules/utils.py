@@ -7,6 +7,9 @@ from logging_config import get_logger
 from typing import Optional, Dict, Any
 from pathlib import Path
 import hashlib
+import os
+
+from config import google_api_key_name
 # from typing import List
 
 
@@ -74,3 +77,16 @@ def meta_filename(meta: dict) -> str:
 def meta_page(meta: dict):
     m = unwrap_meta(meta)
     return m.get("page") or m.get("page_number") or m.get("pagenum")
+
+def resolve_embedding_api_key() -> str:
+    """Fetch the Gemini embedding API key using known environment fallbacks."""
+
+    candidates = [
+        os.environ.get(google_api_key_name),
+        os.environ.get("GEMINI_API_KEY"),
+        os.environ.get("GOOGLE_API_KEY"),
+    ]
+    for value in candidates:
+        if value:
+            return value
+    return ""

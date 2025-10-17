@@ -12,13 +12,14 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from config import google_api_key_name
+from config import google_api_key_name, semantic_embedding_model_name, embedding_model_name
 
 # Chunking
 from ingest.chunking import build_chunks_from_pages
 
 # Embeddings (Gemini via LangChain)
 from models.embbedings import get_gemini_embeddings, get_huggingface_embeddings
+from modules.utils import resolve_embedding_api_key
 
 # Milvus
 from pymilvus import (
@@ -30,8 +31,13 @@ from pymilvus import (
     utility,
 )
 
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+
+chunking_embeddings = get_huggingface_embeddings(semantic_embedding_model_name)
+gemini_embeddings = get_gemini_embeddings(embedding_model_name, api_key=resolve_embedding_api_key())
 
 # -----------------------------
 # Records shaping (unchanged)
@@ -177,16 +183,14 @@ def insert_with_pymilvus(
 
 def embed_batch_texts(
     texts: List[str],
-    model: str,
     batch_size: int,
-    api_key: Optional[str],
     dry_run: bool = False,
 ) -> List[List[float]]:
     if dry_run:
         dim = 1536
         return [[0.001 * ((i + 1) % 10) for _ in range(dim)] for i, _ in enumerate(texts)]
 
-    emb = get_gemini_embeddings(model, api_key)
+    emb = gemini_embeddings
     out: List[List[float]] = []
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
@@ -205,11 +209,9 @@ def store_chunks_to_milvus(
     collection_name: str,
     milvus_host: str = "127.0.0.1",
     milvus_port: int = 19530,
-    embedding_model_name: str = "models/embedding-004",
     embed_batch_size: int = 32,
     insert_batch_size: int = 64,
     dedupe_with_milvus: bool = True,
-    api_key: Optional[str] = None,
     dry_run: bool = False,
     collection_description: str = "",
 ) -> Tuple[int, int]:
@@ -217,9 +219,6 @@ def store_chunks_to_milvus(
     Dedupe by checksum → batch-embed → ensure schema → insert.
     Returns (skipped, inserted).
     """
-    api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if not api_key and not dry_run:
-        log.warning("No GEMINI_API_KEY/GOOGLE_API_KEY set (embedding may fail).")
 
     if not chunks:
         return 0, 0
@@ -274,9 +273,7 @@ def store_chunks_to_milvus(
 
         vectors = embed_batch_texts(
             texts,
-            model=embedding_model_name,
             batch_size=embed_batch_size,
-            api_key=api_key,
             dry_run=dry_run,
         )
         if not vectors or len(vectors) != len(texts):
@@ -314,15 +311,12 @@ def ingest_pages_to_milvus(
     collection_description: str = "",
     milvus_host: str = "127.0.0.1",
     milvus_port: int = 19530,
-    embedding_model_name: str = "models/embedding-004",
-    semantic_embedding_model_name: str = "LazarusNLP/all-indo-e5-small-v4",
     embed_batch_size: int = 32,
     insert_batch_size: int = 64,
     enable_semantic_fallback: bool = True,
     sim_threshold: float = 0.82,
     use_percentile: bool = False,
     percentile: int = 90,
-    api_key: Optional[str] = None,
     dry_run: bool = False,
 ) -> Tuple[int, int]:
     """
@@ -330,8 +324,6 @@ def ingest_pages_to_milvus(
     then embed & store in Milvus.
     """
     # Embeddings object reused for grouping + fallback splitting. Use huggingface for cost.
-    chunking_embeddings = get_huggingface_embeddings(semantic_embedding_model_name)
-
     chunks = build_chunks_from_pages(
         pages=pages,
         doc_id=doc_id,
@@ -349,11 +341,9 @@ def ingest_pages_to_milvus(
         collection_name=collection_name,
         milvus_host=milvus_host,
         milvus_port=milvus_port,
-        embedding_model_name=embedding_model_name,
         embed_batch_size=embed_batch_size,
         insert_batch_size=insert_batch_size,
         dedupe_with_milvus=True,
-        api_key=api_key,
         dry_run=dry_run,
         collection_description=collection_description
     )
