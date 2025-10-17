@@ -32,9 +32,12 @@ def get_page_elements(pdf_path):
                     rows = t.extract()
                 except Exception:
                     rows = None
-                grid = build_cell_border_grid(page, t)
-                if grid is None:
-                    grid = build_cell_border_grid_from_cells_only(page, t)
+                try:
+                    grid = build_cell_border_grid(page, t)
+                    if grid is None:
+                        grid = build_cell_border_grid_from_cells_only(page, t)
+                except Exception:
+                    grid = None
                 tables.append(
                     {
                         "table_index": t_idx,
