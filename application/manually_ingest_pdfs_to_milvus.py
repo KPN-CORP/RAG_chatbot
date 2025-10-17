@@ -11,13 +11,9 @@ folder_path = Path('../assets')
 from config import (
     milvus_host,
     milvus_port,
-    embedding_model_name,
-    semantic_embedding_model_name,  
     collection_description,
-    google_api_key_name,
     collection_name
 )
-api_key = os.getenv(google_api_key_name)  
 
 
 for pdf_path in folder_path.glob("*.pdf"):
@@ -38,9 +34,6 @@ for pdf_path in folder_path.glob("*.pdf"):
         collection_name=collection_name,
         milvus_host=milvus_host,
         milvus_port=milvus_port,
-        embedding_model_name=embedding_model_name,
-        semantic_embedding_model_name=semantic_embedding_model_name,
-        api_key=api_key or None,
         collection_description=collection_description,
     )
 
