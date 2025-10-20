@@ -12,6 +12,15 @@ from modules.table_utils import (
     change_table_format,
 )
 
+from modules.chunking_utils import TRAIL_NUM_RE, should_strip_trailing_number
+
+from modules.narrative_utils import(
+    BULLET_TOKENS,
+    _strip_bullet,
+    _same_line,
+    _is_probable_header_footer,
+) 
+
 logger = get_logger(__name__)
 
 
@@ -19,6 +28,9 @@ def get_page_elements(pdf_path):
     pages_output = []
     with pdfplumber.open(pdf_path) as pdf:
         for pidx, page in enumerate(pdf.pages, start=1):
+            page_width = float(page.width or 0)
+            page_height = float(page.height or 0)
+
             table_bboxes = []
             tables = []
             try:
@@ -47,21 +59,27 @@ def get_page_elements(pdf_path):
                     }
                 )
 
-            words = page.extract_words()
+            words = page.extract_words(
+                x_tolerance=1.5,
+                y_tolerance=3.0,
+                keep_blank_chars=False,
+                use_text_flow=True
+            )
+
             narrative_words = []
             for w in words:
-                wbox = (
-                    float(w["x0"]),
-                    float(w["top"]),
-                    float(w["x1"]),
-                    float(w["bottom"]),
-                )
-                in_table = any(bbox_intersects(wbox, tb["bbox"]) for tb in table_bboxes)
-                if not in_table:
+                wbox = (float(w["x0"]), float(w["top"]), float(w["x1"]), float(w["bottom"]))
+                if not any(bbox_intersects(wbox, tb["bbox"]) for tb in table_bboxes):
                     narrative_words.append(w)
 
-            lines = {}
-            tol = 3
+            # 3) Group words into lines (geometry aware)
+            narrative_words = sorted(
+                narrative_words,
+                key=lambda w: (round(float(w["top"]), 1), float(w["x0"]))
+            )
+
+            grouped = []
+            cur = []
             for w in narrative_words:
                 if not cur or _same_line(cur[-1], w, tol=3.0):
                     cur.append(w)
@@ -77,13 +95,15 @@ def get_page_elements(pdf_path):
                 raw = " ".join(w["text"] for w in ws).strip()
                 top = float(ws[0]["top"])          # you already have this
                 page_h = float(page.height)
-                page_no = pidx   
+                page_no = pidx
+                in_band = (top < 0.10 * page_h) or (top > 0.90 * page_h)
                 if not raw:
                     continue
 
                 top = float(ws[0]["top"])
                 
                 m = TRAIL_NUM_RE.search(raw)
+                trail_num_token = m.group(1) if m else None
                 if m and should_strip_trailing_number(
                     line=raw,
                     y_top=top,
@@ -96,6 +116,9 @@ def get_page_elements(pdf_path):
                 # Universal header/footer & page-marker filter (position + content)
                 if _is_probable_header_footer(raw, top, page_height):
                     continue
+
+                # Strip trailing page number if present (works for '— 88', ' 90', etc.)
+                clean_tail = TRAIL_NUM_RE.sub("", raw).rstrip()
                 
                 content, had_bullet = _strip_bullet(clean_tail)
                 min_x = min(float(w["x0"]) for w in ws)
@@ -116,6 +139,8 @@ def get_page_elements(pdf_path):
                     "hanging_x": float(hanging_x),  # first content x
                     "top": top,
                     "bottom": float(ws[0]["bottom"]),
+                    "in_band": bool(in_band),            # NEW
+                    "trail_num_token": trail_num_token,  # NEW
                 })
 
             # 5) Plain text (compat) + tables normalization
