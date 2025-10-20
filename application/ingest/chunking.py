@@ -11,6 +11,9 @@ from modules.chunking_utils import (
     _is_header,
     _norm_for_embed,
     _normalize_header,
+    _looks_like_page_marker,
+    _bullet_level_and_text,
+    _push_label_to_path,
 )
 
 # -----------------------------
@@ -34,38 +37,67 @@ def parse_policy_to_nodes(text: str, section_hint: Optional[str] = None) -> List
     """
     Convert raw narrative text into nodes with breadcrumb 'path' and 'kind'.
     node = {'path': ['SECTION','Subsection'], 'kind':'header'|'bullet'|'para', 'line': str}
-    - section_hint: carried header from previous page (if any).
     """
     path: List[str] = [section_hint] if section_hint else []
     out: List[Dict[str, Any]] = []
 
-    for raw in text.splitlines():
+    pending_bullet_level: Optional[int] = None  # if previous line was just a bullet glyph
+    last_kind: Optional[str] = None
+
+    for raw in (text or "").splitlines():
+        # 1) skip empties & universal page/line markers (replaces ONLY_NUM_RE)
+        if not raw.strip():
+            continue
+        if _looks_like_page_marker(raw):
+            continue
+
         line = _clean_line(raw)
         if not line:
             continue
 
+        # 2) header?
         if _is_header(line):
             title = line.title()
             path = [title]
             out.append({"path": path[:], "kind": "header", "line": title})
+            pending_bullet_level = None
+            last_kind = "header"
             continue
 
-        if BULLET_MARK_RE.match(line):
-            content = BULLET_MARK_RE.sub("", line).strip()
+        # 3) bullet detection (honor pending bullet)
+        level, content = _bullet_level_and_text(line)
+        if level is None and pending_bullet_level is not None:
+            level, content = pending_bullet_level, line
+            pending_bullet_level = None
+
+        if level is not None:
+            if content == "":
+                # standalone glyph line ('●') → carry level to next line
+                pending_bullet_level = level
+                last_kind = None
+                continue
+
             if content.endswith(":"):
+                # label → push into path at that level
                 label = content[:-1].strip()
-                if path:
-                    if len(path) == 1:
-                        path = [path[0], label]
-                    else:
-                        path[-1] = label
-                else:
+                if not path:
                     path = [label]
+                else:
+                    path = _push_label_to_path(path, level=level+0, label=label)
                 out.append({"path": path[:], "kind": "para", "line": label})
+                last_kind = "para"
             else:
-                out.append({"path": path[:], "kind": "bullet", "line": content})
+                current_path = path[:level] if path else []
+                out.append({"path": current_path if current_path else path, "kind": "bullet", "line": content})
+                last_kind = "bullet"
+            continue
+
+        # 4) non-bullet, non-header → continuation vs new para
+        if out and last_kind in {"bullet", "para"}:
+            out[-1]["line"] = (out[-1]["line"] + " " + line).strip()
         else:
             out.append({"path": path[:], "kind": "para", "line": line})
+        last_kind = "para"
 
     return out
 
