@@ -2,6 +2,8 @@
 
 import pdfplumber
 
+from typing import List, Dict, Any
+
 from logging_config import get_logger
 
 from modules.table_utils import (
@@ -14,14 +16,68 @@ from modules.table_utils import (
 
 from modules.chunking_utils import TRAIL_NUM_RE, should_strip_trailing_number
 
-from modules.narrative_utils import(
-    BULLET_TOKENS,
+from modules.narrative_utils import (
     _strip_bullet,
     _same_line,
     _is_probable_header_footer,
-) 
+)
 
 logger = get_logger(__name__)
+
+
+def _looks_like_floating_trailing_number(line_words: List[Dict[str, Any]], prev_words: List[Dict[str, Any]]) -> bool:
+    """Return True if *line_words* looks like a dangling superscript number for the previous line."""
+    if not line_words or not prev_words:
+        return False
+
+    # Merge tokens to inspect their textual content
+    token = "".join(w.get("text", "") for w in line_words).strip()
+    if not token:
+        return False
+
+    # Allow a narrow set of patterns: 1-4 digits, optionally separated by thin spaces
+    normalized = token.replace(" ", "")
+    if not normalized.isdigit() or len(normalized) > 4:
+        return False
+
+    # Superscripts typically sit near the end of the previous line and are narrow
+    prev_right = max(float(w.get("x1", 0.0)) for w in prev_words)
+    current_left = min(float(w.get("x0", 0.0)) for w in line_words)
+    current_right = max(float(w.get("x1", 0.0)) for w in line_words)
+    if current_left < (prev_right - 12.0):
+        return False
+    if (current_right - current_left) > 32.0:
+        return False
+
+    prev_top = min(float(w.get("top", 0.0)) for w in prev_words)
+    prev_bottom = max(float(w.get("bottom", 0.0)) for w in prev_words)
+    current_top = min(float(w.get("top", 0.0)) for w in line_words)
+    current_bottom = max(float(w.get("bottom", 0.0)) for w in line_words)
+
+    # Accept small vertical offsets (a little above or overlapping), but reject numbers
+    # that clearly belong to the next baseline.
+    if current_top > (prev_bottom + 6.0):
+        return False
+    if current_bottom < (prev_top - 12.0):
+        return False
+
+    return True
+
+
+def _merge_floating_trailing_numbers(grouped_words: List[List[Dict[str, Any]]]) -> List[List[Dict[str, Any]]]:
+    """Attach stray superscript-like number lines back to the previous line."""
+
+    if not grouped_words:
+        return grouped_words
+
+    merged: List[List[Dict[str, Any]]] = []
+    for line_words in grouped_words:
+        if merged and _looks_like_floating_trailing_number(line_words, merged[-1]):
+            merged[-1].extend(line_words)
+            merged[-1].sort(key=lambda w: (float(w.get("x0", 0.0)), float(w.get("top", 0.0))))
+        else:
+            merged.append(line_words)
+    return merged
 
 
 def get_page_elements(pdf_path):
@@ -89,6 +145,8 @@ def get_page_elements(pdf_path):
             if cur:
                 grouped.append(cur)
 
+            grouped = _merge_floating_trailing_numbers(grouped)
+
             # 4) Build indent-aware narrative lines; filter headers/footers robustly
             narrative_lines = []
             for ws in grouped:
@@ -103,40 +161,33 @@ def get_page_elements(pdf_path):
                 top = float(ws[0]["top"])
                 
                 m = TRAIL_NUM_RE.search(raw)
-                trail_num_token = m.group(1) if m else None
-                if m and should_strip_trailing_number(
-                    line=raw,
-                    y_top=top,
-                    page_height=page_h,
-                    page_no=page_no,
-                    captured_token=m.group(1),
-                ):
-                    raw = raw[: m.start()].rstrip()
+                trail_num_token = None
+                if m:
+                    candidate_token = m.group(1)
+                    if should_strip_trailing_number(
+                        line=raw,
+                        y_top=top,
+                        page_height=page_h,
+                        page_no=page_no,
+                        captured_token=candidate_token,
+                    ):
+                        raw = raw[: m.start()].rstrip()
+                    else:
+                        trail_num_token = candidate_token
 
                 # Universal header/footer & page-marker filter (position + content)
                 if _is_probable_header_footer(raw, top, page_height):
                     continue
 
-                # Strip trailing page number if present (works for '— 88', ' 90', etc.)
-                clean_tail = TRAIL_NUM_RE.sub("", raw).rstrip()
+                # Trailing page numbers are removed above when requested; reuse the text as-is.
+                clean_tail = raw
                 
                 content, had_bullet = _strip_bullet(clean_tail)
-                min_x = min(float(w["x0"]) for w in ws)
-
-                if had_bullet:
-                    if ws[0]["text"] in BULLET_TOKENS and len(ws) > 1:
-                        hanging_x = float(ws[1]["x0"])
-                    else:
-                        hanging_x = float(ws[0]["x0"])
-                else:
-                    hanging_x = float(ws[0]["x0"])
 
                 narrative_lines.append({
                     "raw": raw,                 # full text as seen on the page
                     "text": content,            # without the leading bullet token
                     "had_bullet": had_bullet,   # True if a bullet marker was detected
-                    "min_x": float(min_x),      # line left edge
-                    "hanging_x": float(hanging_x),  # first content x
                     "top": top,
                     "bottom": float(ws[0]["bottom"]),
                     "in_band": bool(in_band),            # NEW
@@ -164,7 +215,7 @@ def get_page_elements(pdf_path):
                 {
                     "page": pidx,
                     "narrative_text": narrative_text,
-                    # NEW: export the per-line metadata so the parser can use indentation
+                    # NEW: export the per-line metadata for downstream heuristics
                     "narrative_lines": narrative_lines,
                     "tables": table_records,
                 }
