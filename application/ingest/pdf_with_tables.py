@@ -63,15 +63,63 @@ def get_page_elements(pdf_path):
             lines = {}
             tol = 3
             for w in narrative_words:
-                top = round(float(w["top"]) / tol) * tol
-                lines.setdefault(top, []).append((float(w["x0"]), w["text"]))
+                if not cur or _same_line(cur[-1], w, tol=3.0):
+                    cur.append(w)
+                else:
+                    grouped.append(cur)
+                    cur = [w]
+            if cur:
+                grouped.append(cur)
 
-            sorted_lines = [
-                " ".join([t[1] for t in sorted(line, key=lambda x: x[0])])
-                for top, line in sorted(lines.items())
-            ]
+            # 4) Build indent-aware narrative lines; filter headers/footers robustly
+            narrative_lines = []
+            for ws in grouped:
+                raw = " ".join(w["text"] for w in ws).strip()
+                top = float(ws[0]["top"])          # you already have this
+                page_h = float(page.height)
+                page_no = pidx   
+                if not raw:
+                    continue
 
-            narrative_text = "\n".join(sorted_lines).strip()
+                top = float(ws[0]["top"])
+                
+                m = TRAIL_NUM_RE.search(raw)
+                if m and should_strip_trailing_number(
+                    line=raw,
+                    y_top=top,
+                    page_height=page_h,
+                    page_no=page_no,
+                    captured_token=m.group(1),
+                ):
+                    raw = raw[: m.start()].rstrip()
+
+                # Universal header/footer & page-marker filter (position + content)
+                if _is_probable_header_footer(raw, top, page_height):
+                    continue
+                
+                content, had_bullet = _strip_bullet(clean_tail)
+                min_x = min(float(w["x0"]) for w in ws)
+
+                if had_bullet:
+                    if ws[0]["text"] in BULLET_TOKENS and len(ws) > 1:
+                        hanging_x = float(ws[1]["x0"])
+                    else:
+                        hanging_x = float(ws[0]["x0"])
+                else:
+                    hanging_x = float(ws[0]["x0"])
+
+                narrative_lines.append({
+                    "raw": raw,                 # full text as seen on the page
+                    "text": content,            # without the leading bullet token
+                    "had_bullet": had_bullet,   # True if a bullet marker was detected
+                    "min_x": float(min_x),      # line left edge
+                    "hanging_x": float(hanging_x),  # first content x
+                    "top": top,
+                    "bottom": float(ws[0]["bottom"]),
+                })
+
+            # 5) Plain text (compat) + tables normalization
+            narrative_text = "\n".join(nl["text"] for nl in narrative_lines).strip()
             table_records = []
             for t in tables:
                 if t["rows"]:
