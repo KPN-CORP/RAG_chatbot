@@ -18,6 +18,7 @@ from modules.chunking_utils import (
     TRAIL_NUM_RE,
     _cluster_indent_buckets,      # NEW
     _indent_level_for_x,          # NEW
+    boundary_join,
 )
 
 # -----------------------------
@@ -74,6 +75,8 @@ def parse_policy_to_nodes(
 
     # iterate lines; if meta is provided, sync by index
     lines = (text or "").splitlines()
+    # Track last physical line index that contributed text to the current node
+    last_phys_idx_for_node = None
     for idx, raw in enumerate(lines):
         # 1) skip empties & universal page/line markers
         if not raw.strip():
@@ -144,12 +147,14 @@ def parse_policy_to_nodes(
 
         # 4) plain paragraph / continuation
         if last_kind in {"bullet", "para"}:
-            # continuation of previous item
-            out[-1]["line"] = (out[-1]["line"] + " " + line).strip()
+            # Use boundary-aware join to avoid moving page numbers into the middle
+            prev_meta = meta_by_index.get(last_phys_idx_for_node or idx - 1, {})
+            out[-1]["line"] = boundary_join(out[-1]["line"], line, prev_meta)
             last_kind = out[-1]["kind"]
         else:
             out.append({"path": path[:], "kind": "para", "line": line})
             last_kind = "para"
+        last_phys_idx_for_node = idx
 
     return out
 

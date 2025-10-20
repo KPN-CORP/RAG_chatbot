@@ -198,6 +198,16 @@ def should_strip_trailing_number(
 
     return True
 
+def boundary_join(prev_text: str, next_text: str, prev_meta: dict) -> str:
+    """
+    Join prev_text and next_text with a space, but if prev_meta indicates
+    a header/footer-band trailing number, drop that number before joining.
+    """
+    if prev_meta and prev_meta.get("in_band") and prev_meta.get("trail_num_token"):
+        # remove only the trailing token at end-of-line
+        prev_text = TRAIL_NUM_RE.sub("", prev_text).rstrip()
+    return (prev_text + " " + next_text).strip()
+
 # --- Indentation helpers for bullet levels ---------------------------------
 
 def _cluster_indent_buckets(xs: Sequence[float], gap: float = 12.0) -> List[Tuple[float, float]]:

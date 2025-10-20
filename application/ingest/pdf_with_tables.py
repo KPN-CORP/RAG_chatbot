@@ -95,13 +95,15 @@ def get_page_elements(pdf_path):
                 raw = " ".join(w["text"] for w in ws).strip()
                 top = float(ws[0]["top"])          # you already have this
                 page_h = float(page.height)
-                page_no = pidx   
+                page_no = pidx
+                in_band = (top < 0.10 * page_h) or (top > 0.90 * page_h)
                 if not raw:
                     continue
 
                 top = float(ws[0]["top"])
                 
                 m = TRAIL_NUM_RE.search(raw)
+                trail_num_token = m.group(1) if m else None
                 if m and should_strip_trailing_number(
                     line=raw,
                     y_top=top,
@@ -114,6 +116,9 @@ def get_page_elements(pdf_path):
                 # Universal header/footer & page-marker filter (position + content)
                 if _is_probable_header_footer(raw, top, page_height):
                     continue
+
+                # Strip trailing page number if present (works for '— 88', ' 90', etc.)
+                clean_tail = TRAIL_NUM_RE.sub("", raw).rstrip()
                 
                 content, had_bullet = _strip_bullet(clean_tail)
                 min_x = min(float(w["x0"]) for w in ws)
@@ -134,6 +139,8 @@ def get_page_elements(pdf_path):
                     "hanging_x": float(hanging_x),  # first content x
                     "top": top,
                     "bottom": float(ws[0]["bottom"]),
+                    "in_band": bool(in_band),            # NEW
+                    "trail_num_token": trail_num_token,  # NEW
                 })
 
             # 5) Plain text (compat) + tables normalization
