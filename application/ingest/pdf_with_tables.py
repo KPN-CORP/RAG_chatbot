@@ -4,7 +4,7 @@ import pdfplumber
 
 from logging_config import get_logger
 
-from .table_utils import (
+from modules.table_utils import (
     bbox_intersects,
     build_cell_border_grid,
     build_cell_border_grid_from_cells_only,
@@ -12,7 +12,9 @@ from .table_utils import (
     change_table_format,
 )
 
-from .narrative_utils import(
+from modules.chunking_utils import TRAIL_NUM_RE, should_strip_trailing_number
+
+from modules.narrative_utils import(
     BULLET_TOKENS,
     _strip_bullet,
     _same_line,
@@ -91,15 +93,29 @@ def get_page_elements(pdf_path):
             narrative_lines = []
             for ws in grouped:
                 raw = " ".join(w["text"] for w in ws).strip()
+                top = float(ws[0]["top"])          # you already have this
+                page_h = float(page.height)
+                page_no = pidx   
                 if not raw:
                     continue
 
                 top = float(ws[0]["top"])
+                
+                m = TRAIL_NUM_RE.search(raw)
+                if m and should_strip_trailing_number(
+                    line=raw,
+                    y_top=top,
+                    page_height=page_h,
+                    page_no=page_no,
+                    captured_token=m.group(1),
+                ):
+                    raw = raw[: m.start()].rstrip()
+
                 # Universal header/footer & page-marker filter (position + content)
                 if _is_probable_header_footer(raw, top, page_height):
                     continue
-
-                content, had_bullet = _strip_bullet(raw)
+                
+                content, had_bullet = _strip_bullet(clean_tail)
                 min_x = min(float(w["x0"]) for w in ws)
 
                 if had_bullet:
@@ -121,7 +137,7 @@ def get_page_elements(pdf_path):
                 })
 
             # 5) Plain text (compat) + tables normalization
-            narrative_text = "\n".join(nl["raw"] for nl in narrative_lines).strip()
+            narrative_text = "\n".join(nl["text"] for nl in narrative_lines).strip()
             table_records = []
             for t in tables:
                 if t["rows"]:
@@ -141,6 +157,8 @@ def get_page_elements(pdf_path):
                 {
                     "page": pidx,
                     "narrative_text": narrative_text,
+                    # NEW: export the per-line metadata so the parser can use indentation
+                    "narrative_lines": narrative_lines,
                     "tables": table_records,
                 }
             )

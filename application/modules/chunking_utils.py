@@ -5,7 +5,7 @@ import hashlib
 # from dataclasses import dataclass
 import json
 import re
-from typing import List, Any, Dict, Optional
+from typing import List, Any, Dict, Optional, Sequence, Tuple
 
 # -----------------------------
 # Checksum / IDs
@@ -37,9 +37,23 @@ def _checksum(
 # HDR_RE = re.compile(r"^[A-Z0-9 ./-]{6,}$")          # heuristic ALL-CAPS headers
 HDR_RE = re.compile(r"^[A-Z0-9 ()/.,&\-’'–—:]{6,}$")
 
-TRAIL_NUM_RE = re.compile(r"(\s\d{1,3})$")  # trailing page line nums like " 21"
-# Broader trailing pagination crumbs at end of a line (allows dash + up to 5 digits)
-TRAIL_NUM_RE = re.compile(r"(\s*[–—-]?\s*\d{1,5})$")
+# very conservative: standalone 1–4 digits, not part of decimal/percent/ID
+TRAIL_NUM_RE = re.compile(
+    r"""
+    (?<![A-Za-z0-9%/\-])     # not preceded by alnum, %, /, -
+    (?:—\s*|–\s*|–\s*)?      # optional dash
+    (\d{1,4})                # 1–4 digits (capture if you want to compare to page)
+    (?<!\.\d)                # not decimal tail like ".5"
+    \s*$                     # end of line
+    """,
+    re.VERBOSE
+)
+
+_WHITELIST_EO_LINE = re.compile(
+    r"(Pasal|Bab|Tahun|Golongan|No\.?|Level|ISO|UU|PP|PerMen|Perdir|Q\d|%)\s*$",
+    re.IGNORECASE,
+)
+
 
 # Bullet markers (unchanged, extend if you meet new glyphs)
 BULLET_MARK_RE = re.compile(r"^(?:[•●\-–▪]|○|\d+\.)\s*")
@@ -68,7 +82,6 @@ def _normalize_header(h: str) -> str:
 
 def _is_header(line: str) -> bool:
     """Heuristically determine whether *line* looks like a header chunk."""
-
     return bool(HDR_RE.match(line)) and (" " in line or "-" in line or "/" in line)
 
 
@@ -149,6 +162,77 @@ def _push_label_to_path(path_stack: List[str], level: int, label: str) -> List[s
     path_stack.append(label)
     return path_stack
 
+def should_strip_trailing_number(
+    line: str,
+    y_top: float,
+    page_height: float,
+    page_no: int | None = None,
+    captured_token: str | None = None,
+    top_bottom_band_ratio: float = 0.10,
+) -> bool:
+    """
+    Return True if `line` likely ends with a pagination crumb that should be stripped.
+    Uses position (top/bottom bands), whitelist guard, and optional page_no check.
+    """
+    if not line or page_height <= 0:
+        return False
+
+    # 1) Only consider top/bottom bands
+    in_band = (y_top < top_bottom_band_ratio * page_height) or (
+        y_top > (1.0 - top_bottom_band_ratio) * page_height
+    )
+    if not in_band:
+        return False
+
+    # 2) Do not strip if end-of-line has typical legal/HR tokens
+    if _WHITELIST_EO_LINE.search(line):
+        return False
+
+    # 3) If we know page number, keep only if close to it
+    if page_no is not None and captured_token is not None:
+        try:
+            if abs(int(captured_token) - int(page_no)) > 1:
+                return False
+        except ValueError:
+            return False
+
+    return True
+
+# --- Indentation helpers for bullet levels ---------------------------------
+
+def _cluster_indent_buckets(xs: Sequence[float], gap: float = 12.0) -> List[Tuple[float, float]]:
+    """
+    Given a sequence of x positions (e.g., hanging_x), return a list of buckets
+    as [(min_x, max_x), ...], where a new bucket starts when the gap to the
+    previous x exceeds `gap`. This is a simple 1D clustering that works well
+    for indent levels.
+    """
+    vals = sorted(float(x) for x in xs if x is not None)
+    if not vals:
+        return []
+    buckets: List[Tuple[float, float]] = [(vals[0], vals[0])]
+    for x in vals[1:]:
+        lo, hi = buckets[-1]
+        if x - hi > gap:
+            buckets.append((x, x))
+        else:
+            buckets[-1] = (lo, max(hi, x))
+    return buckets
+
+def _indent_level_for_x(x: float, buckets: Sequence[Tuple[float, float]]) -> Optional[int]:
+    """
+    Map an x position to a 1-based level according to `buckets`.
+    Returns None if no buckets exist.
+    """
+    if not buckets:
+        return None
+    for i, (lo, hi) in enumerate(buckets, start=1):
+        if lo - 1e-6 <= x <= hi + 1e-6:
+            return i
+    # if x is left of the first bucket, treat as level 1; if far right, last
+    if x < buckets[0][0]:
+        return 1
+    return len(buckets)
 
 
 

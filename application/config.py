@@ -1,7 +1,7 @@
 import os
 from dotenv import load_dotenv
 
-LOG_LEVEL = "ERROR" # options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+LOG_LEVEL = "DEBUG" # options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 load_dotenv()
 
@@ -22,7 +22,7 @@ gemini_chat_model = "models/gemini-2.5-flash"  # pick the chat model you want
 embedding_model_name = "models/gemini-embedding-001"  # embedding model for Gemini
 semantic_embedding_model_name = "LazarusNLP/all-indo-e5-small-v4"  # embedding model for semantic search
 
-top_k_retrieval = 10
+top_k_retrieval = 7
 
 google_api_key_name = "GEMINI_API_KEY"  # environment variable name for Gemini/Google API key
 

@@ -14,6 +14,10 @@ from modules.chunking_utils import (
     _looks_like_page_marker,
     _bullet_level_and_text,
     _push_label_to_path,
+    # should_strip_trailing_number,
+    TRAIL_NUM_RE,
+    _cluster_indent_buckets,      # NEW
+    _indent_level_for_x,          # NEW
 )
 
 # -----------------------------
@@ -33,10 +37,19 @@ __all__ = [
 # -----------------------------
 
 
-def parse_policy_to_nodes(text: str, section_hint: Optional[str] = None) -> List[Dict[str, Any]]:
+def parse_policy_to_nodes(
+    text: str,
+    section_hint: Optional[str] = None,
+    lines_with_meta: Optional[List[Dict[str, Any]]] = None,  # NEW
+) -> List[Dict[str, Any]]:
     """
     Convert raw narrative text into nodes with breadcrumb 'path' and 'kind'.
+
     node = {'path': ['SECTION','Subsection'], 'kind':'header'|'bullet'|'para', 'line': str}
+
+    If `lines_with_meta` is provided (as emitted by `get_page_elements`), we use
+    indentation (hanging_x) to assign bullet levels robustly. Otherwise we fall
+    back to glyph-based detection only.
     """
     path: List[str] = [section_hint] if section_hint else []
     out: List[Dict[str, Any]] = []
@@ -44,8 +57,25 @@ def parse_policy_to_nodes(text: str, section_hint: Optional[str] = None) -> List
     pending_bullet_level: Optional[int] = None  # if previous line was just a bullet glyph
     last_kind: Optional[str] = None
 
-    for raw in (text or "").splitlines():
-        # 1) skip empties & universal page/line markers (replaces ONLY_NUM_RE)
+    # Build indentation buckets if meta is available
+    indent_buckets: List[Tuple[float, float]] = []
+    meta_by_index: Dict[int, Dict[str, Any]] = {}
+
+    if lines_with_meta:
+        for i, m in enumerate(lines_with_meta):
+            meta_by_index[i] = m
+        # cluster using hanging_x (prefer) or min_x as fallback
+        xs = [
+            (m.get("hanging_x") if m.get("hanging_x") is not None else m.get("min_x"))
+            for m in lines_with_meta
+        ]
+        xs = [x for x in xs if x is not None]
+        indent_buckets = _cluster_indent_buckets(xs, gap=12.0)
+
+    # iterate lines; if meta is provided, sync by index
+    lines = (text or "").splitlines()
+    for idx, raw in enumerate(lines):
+        # 1) skip empties & universal page/line markers
         if not raw.strip():
             continue
         if _looks_like_page_marker(raw):
@@ -57,22 +87,41 @@ def parse_policy_to_nodes(text: str, section_hint: Optional[str] = None) -> List
 
         # 2) header?
         if _is_header(line):
-            title = line.title()
+            # extra safety: normalize header and clear pending bullet
+            title = _normalize_header(line).title()
             path = [title]
             out.append({"path": path[:], "kind": "header", "line": title})
             pending_bullet_level = None
             last_kind = "header"
             continue
 
-        # 3) bullet detection (honor pending bullet)
-        level, content = _bullet_level_and_text(line)
-        if level is None and pending_bullet_level is not None:
-            level, content = pending_bullet_level, line
+        # 3) bullet detection (glyph + indentation)
+        glyph_level, content = _bullet_level_and_text(line)
+
+        indent_level: Optional[int] = None
+        if lines_with_meta:
+            m = meta_by_index.get(idx, {})
+            x = m.get("hanging_x", m.get("min_x"))
+            if x is not None:
+                indent_level = _indent_level_for_x(float(x), indent_buckets)
+
+        # Honor pending glyph-only level if we saw a standalone bullet marker before
+        if glyph_level is None and pending_bullet_level is not None:
+            glyph_level = pending_bullet_level
+            content = line
             pending_bullet_level = None
+
+        # If there is *either* a glyph-level or an indentation-level, treat as bullet
+        level: Optional[int] = None
+        if glyph_level is not None and indent_level is not None:
+            # reconcile: prefer indentation to keep nesting stable across mixed glyphs
+            level = indent_level
+        else:
+            level = glyph_level if glyph_level is not None else indent_level
 
         if level is not None:
             if content == "":
-                # standalone glyph line ('●') → carry level to next line
+                # standalone glyph line (e.g., '●') → carry level to next line
                 pending_bullet_level = level
                 last_kind = None
                 continue
@@ -83,21 +132,24 @@ def parse_policy_to_nodes(text: str, section_hint: Optional[str] = None) -> List
                 if not path:
                     path = [label]
                 else:
-                    path = _push_label_to_path(path, level=level+0, label=label)
-                out.append({"path": path[:], "kind": "para", "line": label})
-                last_kind = "para"
-            else:
-                current_path = path[:level] if path else []
-                out.append({"path": current_path if current_path else path, "kind": "bullet", "line": content})
-                last_kind = "bullet"
+                    path = _push_label_to_path(path, level, label)
+                out.append({"path": path[:], "kind": "label", "line": label})
+                last_kind = "label"
+                continue
+
+            # bullet content
+            out.append({"path": path[:], "kind": "bullet", "line": content, "level": level})
+            last_kind = "bullet"
             continue
 
-        # 4) non-bullet, non-header → continuation vs new para
-        if out and last_kind in {"bullet", "para"}:
+        # 4) plain paragraph / continuation
+        if last_kind in {"bullet", "para"}:
+            # continuation of previous item
             out[-1]["line"] = (out[-1]["line"] + " " + line).strip()
+            last_kind = out[-1]["kind"]
         else:
             out.append({"path": path[:], "kind": "para", "line": line})
-        last_kind = "para"
+            last_kind = "para"
 
     return out
 
@@ -286,6 +338,7 @@ def atomic_rules_to_chunks(
     out: List[Dict[str, Any]] = []
     for i, r in enumerate(rules, 1):
         breadcrumb = " > ".join(r["path"]) if r["path"] else ""
+        breadcrumb = TRAIL_NUM_RE.sub("", breadcrumb).strip()
         text = f"{breadcrumb} — {r['text']}".strip() if breadcrumb else r["text"].strip()
         meta = {
             "source": source,
@@ -418,6 +471,7 @@ def build_chunks_from_pages(
         page_no = pg.get("page")
         nar = (pg.get("narrative_text") or "").strip()
         tables = pg.get("tables") or []
+        lines_with_meta=pg.get("narrative_lines")
 
         # detect this page header (if any)
         section_hint = section_carry
@@ -433,7 +487,7 @@ def build_chunks_from_pages(
 
         # 1) Narrative → atomic rules
         if nar:
-            nodes = parse_policy_to_nodes(nar, section_hint=section_hint)
+            nodes = parse_policy_to_nodes(nar, section_hint=section_hint, lines_with_meta=lines_with_meta)
 
             # track carry-over header
             for n in nodes:
