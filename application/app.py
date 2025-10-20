@@ -19,7 +19,6 @@ from config import (
     milvus_host,
     milvus_port,
     qa_system_prompt,
-    top_k_retrieval
 )
 from modules.utils import extract_json_string, meta_filename, meta_page, _build_document_identifier
 
@@ -222,7 +221,7 @@ def chat(req: ChatReq):
     mem = RedisConversationMemory(session_id=req.session_id, max_messages=MAX_HISTORY_MESSAGES)
 
     # 3) Build retriever from vectorstore (and optionally wrap with a sanitizer)
-    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": top_k_retrieval})
+    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})
     # If you have a safe SanitizingRetriever (no LLM calls inside), use it; otherwise keep the plain retriever:
     # sanitized_retriever = SanitizingRetriever(retriever)
 
