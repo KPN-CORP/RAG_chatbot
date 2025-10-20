@@ -5,7 +5,7 @@ import hashlib
 # from dataclasses import dataclass
 import json
 import re
-from typing import List, Any, Dict, Optional
+from typing import List, Any, Dict, Optional, Sequence, Tuple
 
 # -----------------------------
 # Checksum / IDs
@@ -207,6 +207,44 @@ def boundary_join(prev_text: str, next_text: str, prev_meta: dict) -> str:
         # remove only the trailing token at end-of-line
         prev_text = TRAIL_NUM_RE.sub("", prev_text).rstrip()
     return (prev_text + " " + next_text).strip()
+
+# --- Indentation helpers for bullet levels ---------------------------------
+
+def _cluster_indent_buckets(xs: Sequence[float], gap: float = 12.0) -> List[Tuple[float, float]]:
+    """
+    Given a sequence of x positions (e.g., hanging_x), return a list of buckets
+    as [(min_x, max_x), ...], where a new bucket starts when the gap to the
+    previous x exceeds `gap`. This is a simple 1D clustering that works well
+    for indent levels.
+    """
+    vals = sorted(float(x) for x in xs if x is not None)
+    if not vals:
+        return []
+    buckets: List[Tuple[float, float]] = [(vals[0], vals[0])]
+    for x in vals[1:]:
+        lo, hi = buckets[-1]
+        if x - hi > gap:
+            buckets.append((x, x))
+        else:
+            buckets[-1] = (lo, max(hi, x))
+    return buckets
+
+def _indent_level_for_x(x: float, buckets: Sequence[Tuple[float, float]]) -> Optional[int]:
+    """
+    Map an x position to a 1-based level according to `buckets`.
+    Returns None if no buckets exist.
+    """
+    if not buckets:
+        return None
+    for i, (lo, hi) in enumerate(buckets, start=1):
+        if lo - 1e-6 <= x <= hi + 1e-6:
+            return i
+    # if x is left of the first bucket, treat as level 1; if far right, last
+    if x < buckets[0][0]:
+        return 1
+    return len(buckets)
+
+
 
 def _to_number(s: str) -> Optional[float]:
     """Generic numeric parse: '1.200'->1200, '1200'->1200, '80'->80, else None."""

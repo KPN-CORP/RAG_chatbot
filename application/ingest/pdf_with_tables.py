@@ -16,7 +16,8 @@ from modules.table_utils import (
 
 from modules.chunking_utils import TRAIL_NUM_RE, should_strip_trailing_number
 
-from modules.narrative_utils import (
+from modules.narrative_utils import(
+    BULLET_TOKENS,
     _strip_bullet,
     _same_line,
     _is_probable_header_footer,
@@ -129,10 +130,10 @@ def get_page_elements(pdf_path):
                     narrative_words.append(w)
 
             # 3) Group words into lines (geometry aware)
-            narrative_words = sorted(
-                narrative_words,
-                key=lambda w: (round(float(w["top"]), 1), float(w["x0"]))
-            )
+            # narrative_words = sorted(
+            #     narrative_words,
+            #     key=lambda w: (round(float(w["top"]), 1), float(w["x0"]))
+            # )
 
             grouped = []
             cur = []
@@ -183,11 +184,22 @@ def get_page_elements(pdf_path):
                 clean_tail = raw
                 
                 content, had_bullet = _strip_bullet(clean_tail)
+                min_x = min(float(w["x0"]) for w in ws)
+
+                if had_bullet:
+                    if ws[0]["text"] in BULLET_TOKENS and len(ws) > 1:
+                        hanging_x = float(ws[1]["x0"])
+                    else:
+                        hanging_x = float(ws[0]["x0"])
+                else:
+                    hanging_x = float(ws[0]["x0"])
 
                 narrative_lines.append({
                     "raw": raw,                 # full text as seen on the page
                     "text": content,            # without the leading bullet token
                     "had_bullet": had_bullet,   # True if a bullet marker was detected
+                    "min_x": float(min_x),      # line left edge
+                    "hanging_x": float(hanging_x),  # first content x
                     "top": top,
                     "bottom": float(ws[0]["bottom"]),
                     "in_band": bool(in_band),            # NEW
@@ -215,7 +227,7 @@ def get_page_elements(pdf_path):
                 {
                     "page": pidx,
                     "narrative_text": narrative_text,
-                    # NEW: export the per-line metadata for downstream heuristics
+                    # NEW: export the per-line metadata so the parser can use indentation
                     "narrative_lines": narrative_lines,
                     "tables": table_records,
                 }

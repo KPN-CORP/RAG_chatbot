@@ -5,6 +5,7 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from modules.chunking_utils import (
+    BULLET_MARK_RE,
     _checksum,
     _clean_line,
     _is_header,
@@ -15,6 +16,8 @@ from modules.chunking_utils import (
     _push_label_to_path,
     # should_strip_trailing_number,
     TRAIL_NUM_RE,
+    _cluster_indent_buckets,      # NEW
+    _indent_level_for_x,          # NEW
     boundary_join,
 )
 
@@ -45,8 +48,9 @@ def parse_policy_to_nodes(
 
     node = {'path': ['SECTION','Subsection'], 'kind':'header'|'bullet'|'para', 'line': str}
 
-    If `lines_with_meta` is provided (as emitted by `get_page_elements`), we keep
-    track of positional metadata for safer paragraph joins and band checks.
+    If `lines_with_meta` is provided (as emitted by `get_page_elements`), we use
+    indentation (hanging_x) to assign bullet levels robustly. Otherwise we fall
+    back to glyph-based detection only.
     """
     path: List[str] = [section_hint] if section_hint else []
     out: List[Dict[str, Any]] = []
@@ -54,12 +58,20 @@ def parse_policy_to_nodes(
     pending_bullet_level: Optional[int] = None  # if previous line was just a bullet glyph
     last_kind: Optional[str] = None
 
-    # Preserve per-line metadata for boundary joins and other heuristics.
+    # Build indentation buckets if meta is available
+    indent_buckets: List[Tuple[float, float]] = []
     meta_by_index: Dict[int, Dict[str, Any]] = {}
 
     if lines_with_meta:
         for i, m in enumerate(lines_with_meta):
             meta_by_index[i] = m
+        # cluster using hanging_x (prefer) or min_x as fallback
+        xs = [
+            (m.get("hanging_x") if m.get("hanging_x") is not None else m.get("min_x"))
+            for m in lines_with_meta
+        ]
+        xs = [x for x in xs if x is not None]
+        indent_buckets = _cluster_indent_buckets(xs, gap=12.0)
 
     # iterate lines; if meta is provided, sync by index
     lines = (text or "").splitlines()
@@ -86,8 +98,15 @@ def parse_policy_to_nodes(
             last_kind = "header"
             continue
 
-        # 3) bullet detection (glyph driven)
+        # 3) bullet detection (glyph + indentation)
         glyph_level, content = _bullet_level_and_text(line)
+
+        indent_level: Optional[int] = None
+        if lines_with_meta:
+            m = meta_by_index.get(idx, {})
+            x = m.get("hanging_x", m.get("min_x"))
+            if x is not None:
+                indent_level = _indent_level_for_x(float(x), indent_buckets)
 
         # Honor pending glyph-only level if we saw a standalone bullet marker before
         if glyph_level is None and pending_bullet_level is not None:
@@ -95,7 +114,13 @@ def parse_policy_to_nodes(
             content = line
             pending_bullet_level = None
 
-        level: Optional[int] = glyph_level
+        # If there is *either* a glyph-level or an indentation-level, treat as bullet
+        level: Optional[int] = None
+        if glyph_level is not None and indent_level is not None:
+            # reconcile: prefer indentation to keep nesting stable across mixed glyphs
+            level = indent_level
+        else:
+            level = glyph_level if glyph_level is not None else indent_level
 
         if level is not None:
             if content == "":
