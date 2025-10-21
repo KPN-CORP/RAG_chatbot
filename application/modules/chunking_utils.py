@@ -7,28 +7,6 @@ import json
 import re
 from typing import List, Any, Dict, Optional, Sequence, Tuple
 
-# -----------------------------
-# Checksum / IDs
-# -----------------------------
-
-
-def _checksum(
-    text: str,
-    source: Optional[str] = None,
-    page: Optional[int] = None,
-    extra: Optional[Dict[str, Any]] = None,
-) -> str:
-    """Stable checksum for dedupe (text + context)."""
-    m = hashlib.sha1()
-    m.update(text.encode("utf-8"))
-    if source:
-        m.update(f"|src:{source}".encode("utf-8"))
-    if page is not None:
-        m.update(f"|pg:{page}".encode("utf-8"))
-    if extra:
-        m.update(f"|x:{json.dumps(extra, sort_keys=True, ensure_ascii=False)}".encode("utf-8"))
-    return m.hexdigest()
-
 
 # -----------------------------
 # Text normalization / heuristics
@@ -65,6 +43,18 @@ ROMAN_RE = re.compile(
 )
 DECOR_ONLY_RE = re.compile(r"^[\s\-\—\–_.•○●|·]+$")
 
+# --- Sentence boundary helper (universal) ---
+_END_SENTENCE_RE = re.compile(r'([.!?…])["”\']?\s*$')
+
+def _ends_sentence(s: str) -> bool:
+    """
+    True if 's' looks like an end of sentence. Conservative: only ., !, ?, …
+    Avoids false positives on abbreviations by requiring end-of-line punctuation.
+    """
+    if not s:
+        return False
+    s = s.strip()
+    return bool(_END_SENTENCE_RE.search(s))
 
 
 def _clean_line(s: str) -> str:
@@ -107,6 +97,7 @@ def _mostly_digits_or_roman(s: str) -> bool:
         return True
     return False
 
+
 def _looks_like_page_marker(s: str) -> bool:
     """
     Universal text-only filter for page numbers / headers / footers:
@@ -126,6 +117,7 @@ def _looks_like_page_marker(s: str) -> bool:
     if _mostly_digits_or_roman(t):
         return True
     return False
+
 
 def _bullet_level_and_text(line: str) -> tuple[Optional[int], str]:
     """
@@ -150,6 +142,7 @@ def _bullet_level_and_text(line: str) -> tuple[Optional[int], str]:
         lvl = 1
     return lvl, content
 
+
 def _push_label_to_path(path_stack: List[str], level: int, label: str) -> List[str]:
     """
     Ensure path_stack has slots up to 'level' (1-based), then set/replace
@@ -161,6 +154,7 @@ def _push_label_to_path(path_stack: List[str], level: int, label: str) -> List[s
         path_stack.append("")  # unnamed parent (rare)
     path_stack.append(label)
     return path_stack
+
 
 def should_strip_trailing_number(
     line: str,
@@ -198,6 +192,7 @@ def should_strip_trailing_number(
 
     return True
 
+
 def boundary_join(prev_text: str, next_text: str, prev_meta: dict) -> str:
     """
     Join prev_text and next_text with a space, but if prev_meta indicates
@@ -209,6 +204,7 @@ def boundary_join(prev_text: str, next_text: str, prev_meta: dict) -> str:
     return (prev_text + " " + next_text).strip()
 
 # --- Indentation helpers for bullet levels ---------------------------------
+
 
 def _cluster_indent_buckets(xs: Sequence[float], gap: float = 12.0) -> List[Tuple[float, float]]:
     """
@@ -229,6 +225,7 @@ def _cluster_indent_buckets(xs: Sequence[float], gap: float = 12.0) -> List[Tupl
             buckets[-1] = (lo, max(hi, x))
     return buckets
 
+
 def _indent_level_for_x(x: float, buckets: Sequence[Tuple[float, float]]) -> Optional[int]:
     """
     Map an x position to a 1-based level according to `buckets`.
@@ -243,7 +240,6 @@ def _indent_level_for_x(x: float, buckets: Sequence[Tuple[float, float]]) -> Opt
     if x < buckets[0][0]:
         return 1
     return len(buckets)
-
 
 
 def _to_number(s: str) -> Optional[float]:
@@ -266,3 +262,24 @@ def _to_number(s: str) -> Optional[float]:
         except Exception:
             return None
     return None
+
+# -----------------------------
+# Checksum / IDs
+# -----------------------------
+
+def _checksum(
+    text: str,
+    source: Optional[str] = None,
+    page: Optional[int] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Stable checksum for dedupe (text + context)."""
+    m = hashlib.sha1()
+    m.update(text.encode("utf-8"))
+    if source:
+        m.update(f"|src:{source}".encode("utf-8"))
+    if page is not None:
+        m.update(f"|pg:{page}".encode("utf-8"))
+    if extra:
+        m.update(f"|x:{json.dumps(extra, sort_keys=True, ensure_ascii=False)}".encode("utf-8"))
+    return m.hexdigest()

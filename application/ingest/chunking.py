@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from modules.chunking_utils import (
     BULLET_MARK_RE,
+    TRAIL_NUM_RE,
     _checksum,
     _clean_line,
     _is_header,
@@ -14,8 +15,7 @@ from modules.chunking_utils import (
     _looks_like_page_marker,
     _bullet_level_and_text,
     _push_label_to_path,
-    # should_strip_trailing_number,
-    TRAIL_NUM_RE,
+    _ends_sentence,
     _cluster_indent_buckets,      # NEW
     _indent_level_for_x,          # NEW
     boundary_join,
@@ -37,6 +37,23 @@ __all__ = [
 # Parse to nodes (structure-first)
 # -----------------------------
 
+# --- CONTINUATION-FIRST LOGIC (prevents mid-sentence splits) ---
+def _can_continue_prev_node(out: List[Dict[str, Any]], path: List[str], candidate_level: Optional[int]) -> bool:
+    if not out:
+        return False
+    prev = out[-1]
+    # must be bullet or paragraph to join
+    if prev["kind"] not in {"bullet", "para"}:
+        return False
+    # same hierarchical path
+    if prev.get("path", []) != path:
+        return False
+    # if both have levels, require same level
+    if "level" in prev and candidate_level is not None:
+        if prev["level"] != candidate_level:
+            return False
+    # only continue if previous line hasn't ended a sentence
+    return not _ends_sentence(prev.get("line", ""))
 
 def parse_policy_to_nodes(
     text: str,
@@ -113,8 +130,8 @@ def parse_policy_to_nodes(
             glyph_level = pending_bullet_level
             content = line
             pending_bullet_level = None
-
-        # If there is *either* a glyph-level or an indentation-level, treat as bullet
+        
+        # If there is *either* a glyph-level or an indentation-level, treat as bullet candidate
         level: Optional[int] = None
         if glyph_level is not None and indent_level is not None:
             # reconcile: prefer indentation to keep nesting stable across mixed glyphs
@@ -123,6 +140,7 @@ def parse_policy_to_nodes(
             level = glyph_level if glyph_level is not None else indent_level
 
         if level is not None:
+            # Handle pure label lines like "Kuota Maksimal:" that should shape the path
             if content == "":
                 # standalone glyph line (e.g., '●') → carry level to next line
                 pending_bullet_level = level
@@ -140,21 +158,30 @@ def parse_policy_to_nodes(
                 last_kind = "label"
                 continue
 
-            # bullet content
+            # If previous node exists and we're mid-sentence, join instead of split
+            if _can_continue_prev_node(out, path, level):
+                prev_meta = meta_by_index.get(last_phys_idx_for_node or idx - 1, {})
+                out[-1]["line"] = boundary_join(out[-1]["line"], content, prev_meta)
+                last_kind = out[-1]["kind"]
+                last_phys_idx_for_node = idx
+                continue
+
+            # Otherwise, start a fresh bullet node
             out.append({"path": path[:], "kind": "bullet", "line": content, "level": level})
             last_kind = "bullet"
+            last_phys_idx_for_node = idx
             continue
 
         # 4) plain paragraph / continuation
-        if last_kind in {"bullet", "para"}:
-            # Use boundary-aware join to avoid moving page numbers into the middle
+        if last_kind in {"bullet", "para"} and _can_continue_prev_node(out, path, candidate_level=None):
             prev_meta = meta_by_index.get(last_phys_idx_for_node or idx - 1, {})
             out[-1]["line"] = boundary_join(out[-1]["line"], line, prev_meta)
             last_kind = out[-1]["kind"]
+            last_phys_idx_for_node = idx
         else:
             out.append({"path": path[:], "kind": "para", "line": line})
             last_kind = "para"
-        last_phys_idx_for_node = idx
+            last_phys_idx_for_node = idx
 
     return out
 
@@ -190,7 +217,7 @@ def _embed_small_texts(texts: List[str], embeddings) -> List[List[float]]:
 def group_atomic_rules_semantic(
     nodes: List[Dict[str, Any]],
     embeddings,  # required (e.g., GoogleGenerativeAIEmbeddings instance)
-    sim_threshold: float = 0.82,  # tune 0.78–0.86
+    sim_threshold: float = 0.80,  # tune 0.78–0.86
     use_percentile: bool = False,
     percentile: int = 90,
 ) -> List[Dict[str, Any]]:
