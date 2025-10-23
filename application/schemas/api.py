@@ -28,3 +28,4 @@ class ChatResp(BaseModel):
 
     answer: str
     sources: List[Source]  # <-- More robust and type-safe!
+    # not_found: bool = False
