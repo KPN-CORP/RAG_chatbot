@@ -34,6 +34,18 @@ _WHITELIST_EO_LINE = re.compile(
 
 
 # Bullet markers (unchanged, extend if you meet new glyphs)
+TIME_PREFIX_RE = re.compile(
+    r"""
+    ^\s*
+    (?P<hour>\d{1,2})
+    [\.:]
+    (?P<minute>\d{2})
+    (?:\.?)(?=\s|$|[,;:])
+    """,
+    re.VERBOSE,
+)
+
+
 BULLET_MARK_RE = re.compile(r"^(?:[•●\-–▪]|○|\d+\.)\s*")
 
 # Page-marker patterns in multiple languages (very permissive but short)
@@ -126,6 +138,22 @@ def _bullet_level_and_text(line: str) -> tuple[Optional[int], str]:
       1 -> ● • ▪
       2 -> ○ – -  or  N.
     """
+    stripped = line.lstrip()
+
+    # Guard against time-like prefixes (e.g. "14.00" or "08:30") being misread as
+    # numbered bullets.  When detected, short-circuit and treat the line as plain
+    # text.  Only accept plausible clock times where 0 <= hour < 24 and
+    # 0 <= minute < 60.
+    m_time = TIME_PREFIX_RE.match(stripped)
+    if m_time:
+        try:
+            hour = int(m_time.group("hour"))
+            minute = int(m_time.group("minute"))
+        except (TypeError, ValueError):
+            hour = minute = -1
+        if 0 <= hour < 24 and 0 <= minute < 60:
+            return None, line
+
     m = BULLET_MARK_RE.match(line)
     if not m:
         return None, line
