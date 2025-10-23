@@ -45,6 +45,17 @@ TIME_PREFIX_RE = re.compile(
     re.VERBOSE,
 )
 
+TIME_TOKEN_RE = re.compile(
+    r"""
+    ^\s*
+    (?P<hour>\d{1,2})
+    [\.:]
+    (?P<minute>\d{2})
+    (?:\.?)(?=\s*$)
+    """,
+    re.VERBOSE,
+)
+
 
 BULLET_MARK_RE = re.compile(r"^(?:[•●\-–▪]|○|\d+\.)\s*")
 
@@ -84,7 +95,23 @@ def _normalize_header(h: str) -> str:
 
 def _is_header(line: str) -> bool:
     """Heuristically determine whether *line* looks like a header chunk."""
-    return bool(HDR_RE.match(line)) and (" " in line or "-" in line or "/" in line)
+    stripped = line.strip()
+
+    # Reject standalone time-like tokens (e.g., "14.00" or "08:30") to avoid
+    # promoting clock values to headers.
+    m = TIME_TOKEN_RE.match(stripped)
+    if m:
+        try:
+            hour = int(m.group("hour"))
+            minute = int(m.group("minute"))
+        except (TypeError, ValueError):
+            hour = minute = -1
+        if 0 <= hour < 24 and 0 <= minute < 60:
+            return False
+
+    return bool(HDR_RE.match(stripped)) and (
+        " " in stripped or "-" in stripped or "/" in stripped
+    )
 
 
 def _norm_for_embed(s: str) -> str:
