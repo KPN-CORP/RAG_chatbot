@@ -33,8 +33,12 @@ def extract_json_string(s: str) -> Optional[str]:
 
     try:
         # sanity check it’s valid JSON
-        json.loads(candidate)
-        return candidate
+        candidate_json = json.loads(candidate)
+        
+        candidate_json['sources'] = [dict(t) for t in {tuple(d.items()) for d in candidate_json['sources']}]
+        candidate_string = json.dumps(candidate_json)
+        return candidate_string
+    
     except json.JSONDecodeError as e:
         logger.warning("Extracted text is not valid JSON", extra={"error": str(e), "preview": candidate[:200]})
         return None

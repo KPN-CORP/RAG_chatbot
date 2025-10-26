@@ -169,14 +169,14 @@ def _bullet_level_and_text(line: str) -> tuple[Optional[int], str]:
       2 -> ○ – -  or  N.
     """
     stripped = line.lstrip()
-    logger.info(f"Checking line for bullet marker: {stripped}")
+    logger.debug(f"Checking line for bullet marker: {stripped}")
     # Guard against time-like prefixes (e.g. "14.00" or "08:30") being misread as
     # numbered bullets.  When detected, short-circuit and treat the line as plain
     # text.  Only accept plausible clock times where 0 <= hour < 24 and
     # 0 <= minute < 60.
     m_time = TIME_PREFIX_RE.match(stripped)
     if m_time:
-        logger.info(f"Detected time-like prefix: {m_time.group(0)} in line: {line}")
+        logger.debug(f"Detected time-like prefix: {m_time.group(0)} in line: {line}")
         try:
             hour = int(m_time.group("hour"))
             minute = int(m_time.group("minute"))

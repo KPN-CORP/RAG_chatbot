@@ -3,10 +3,10 @@ from ingest.langchain_milvus_ingest import ingest_pages_to_milvus
 from ingest.pdf_with_tables import extract_pdf_content
 from modules.utils import _build_document_identifier
 import os
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 from pathlib import Path
 
-load_dotenv()
+# load_dotenv()
 folder_path = Path('../assets')
 from config import (
     milvus_host,

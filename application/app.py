@@ -74,6 +74,7 @@ def _expected_ingest_token() -> str:
     return os.environ.get("INGEST_UPLOAD_TOKEN", "")
 
 def extractor_wrapper(msg):
+    logger.debug("Extracting JSON from LLM message", extra={"message": msg})
     default_json = json.dumps({"answer": "", "sources": []}, ensure_ascii=False)
     # msg may be a string or a ChatMessage; normalize to text
     text = getattr(msg, "content", msg)
