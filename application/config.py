@@ -1,7 +1,7 @@
 import os
 from dotenv import load_dotenv
 
-LOG_LEVEL = "DEBUG" # options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+LOG_LEVEL = "INFO" # options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 load_dotenv()
 
@@ -35,7 +35,7 @@ Aturan utama:
    - Katakan maaf apabila tidak yakin mengetahui jawaban dari pertanyaan user.
    - Jangan membuat-buat jawaban.
    - Kamu boleh meminta detail tambahan sesuai dokumen yang diketahui apabila belum lengkap
-3. Selalu sertakan sumber dokumen jika jawabanmu berdasarkan dokumen.
+3. Selalu sertakan sumber dokumen pada seksi "sources" jika jawabanmu berdasarkan dokumen.
 
 Format output WAJIB:
 - Berikan output **HANYA** dalam format JSON valid, tanpa teks tambahan.
