@@ -586,7 +586,8 @@ def check_triple_header(table_data):
         header_row_3 = table_data[2]
 
         for i, item in enumerate(header_row_2):
-            if item is None and header_row_3[i] is not None and i > 0:
+            __, has_upper = _lookup_borders(table_data, row_idx=1, col_idx=i) # and header_row_2[i] has top border:
+            if item is None and header_row_3[i] is not None and i > 0 and has_upper: 
                 return True
 
         if all(isinstance(h, str) for h in header_row_2):

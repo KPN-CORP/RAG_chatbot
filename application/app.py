@@ -74,7 +74,8 @@ def _expected_ingest_token() -> str:
     return os.environ.get("INGEST_UPLOAD_TOKEN", "")
 
 def extractor_wrapper(msg):
-    logger.debug("Extracting JSON from LLM message", extra={"message": msg})
+    # logger.debug("Extracting JSON from LLM message", extra={"message": msg})
+    logger.debug("Extracting JSON from LLM message", extra={"llm_message": msg})
     default_json = json.dumps({"answer": "", "sources": []}, ensure_ascii=False)
     # msg may be a string or a ChatMessage; normalize to text
     text = getattr(msg, "content", msg)
@@ -239,6 +240,7 @@ def chat(req: ChatReq):
             for i, d in enumerate(retrieved_docs, 1):
                 logger.debug({
                     "i": i,
+                    "chunk": d.page_content,
                     "filename": meta_filename(d.metadata),
                     "page": meta_page(d.metadata),
                     "keys": list(d.metadata.keys())
