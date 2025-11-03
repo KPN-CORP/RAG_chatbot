@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from config import google_api_key_name, semantic_embedding_model_name, embedding_model_name
@@ -19,6 +20,7 @@ from ingest.chunking import build_chunks_from_pages
 
 # Embeddings (Gemini via LangChain)
 from models.embbedings import get_gemini_embeddings, get_huggingface_embeddings
+from modules.chunking_utils import _checksum
 from modules.utils import resolve_embedding_api_key
 
 # Milvus
@@ -38,6 +40,65 @@ log = logging.getLogger(__name__)
 
 chunking_embeddings = get_huggingface_embeddings(semantic_embedding_model_name)
 gemini_embeddings = get_gemini_embeddings(embedding_model_name, api_key=resolve_embedding_api_key())
+
+
+_QA_PAIR_RE = re.compile(
+    r"(?is)question\s*:\s*(?P<question>.+?)(?:\r?\n)+\s*answer\s*:\s*(?P<answer>.+?)(?=(?:\r?\n)+\s*question\s*:|\Z)"
+)
+
+
+def _normalize_text(text: str) -> str:
+    """Normalize newlines for consistent downstream processing."""
+
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def detect_question_answer_pairs(text: str) -> List[Tuple[str, str]]:
+    """Extract (question, answer) tuples from "Question:"/"Answer:" formatted text."""
+
+    normalized = _normalize_text(text)
+    pairs: List[Tuple[str, str]] = []
+    for match in _QA_PAIR_RE.finditer(normalized):
+        question = match.group("question").strip()
+        answer = match.group("answer").strip()
+        if question and answer:
+            pairs.append((question, answer))
+    return pairs
+
+
+def build_question_answer_chunks(
+    pairs: List[Tuple[str, str]],
+    doc_id: str,
+    source: str,
+) -> List[Dict[str, Any]]:
+    """Convert detected Q&A pairs into chunk dictionaries ready for Milvus ingestion."""
+
+    chunks: List[Dict[str, Any]] = []
+    for idx, (question, answer) in enumerate(pairs, start=1):
+        chunk_text = f"Question: {question}\nAnswer: {answer}"
+        chunk_id = f"{doc_id}::qa::{idx:04d}"
+        checksum = _checksum(
+            chunk_text,
+            source=source,
+            extra={"qa_index": idx, "chunk_kind": "qa_pair"},
+        )
+        chunks.append(
+            {
+                "chunk_id": chunk_id,
+                "chunk_text": chunk_text,
+                "checksum": checksum,
+                "source": source,
+                "page": idx,
+                "element_type": "qa_pair",
+                "table_id": None,
+                "row_id": None,
+                "list_id": None,
+                "breadcrumb": "",
+                "qa_question": question,
+                "qa_answer": answer,
+            }
+        )
+    return chunks
 
 # -----------------------------
 # Records shaping (unchanged)
@@ -69,6 +130,8 @@ def chunks_to_records(
             "breadcrumb": c.get("breadcrumb"),
             "col_name": c.get("col_name"),
             "value_num": c.get("value_num"),
+            "qa_question": c.get("qa_question"),
+            "qa_answer": c.get("qa_answer"),
         }
         out.append((cid, text, checksum, md))
     return out
@@ -346,4 +409,71 @@ def ingest_pages_to_milvus(
         dedupe_with_milvus=True,
         dry_run=dry_run,
         collection_description=collection_description
+    )
+
+
+def ingest_text_document(
+    text: str,
+    doc_id: str,
+    source: str,
+    collection_name: str,
+    collection_description: str = "",
+    milvus_host: str = "127.0.0.1",
+    milvus_port: int = 19530,
+    embed_batch_size: int = 32,
+    insert_batch_size: int = 64,
+    enable_semantic_fallback: bool = True,
+    sim_threshold: float = 0.82,
+    use_percentile: bool = False,
+    percentile: int = 90,
+    dry_run: bool = False,
+) -> Tuple[int, int]:
+    """Ingest raw text content, preferring Q&A chunking when applicable."""
+
+    if not text:
+        return 0, 0
+
+    normalized = _normalize_text(text)
+    qa_pairs = detect_question_answer_pairs(normalized)
+
+    if qa_pairs:
+        log.info(
+            "Detected %d question/answer pairs for text document",
+            len(qa_pairs),
+        )
+        qa_chunks = build_question_answer_chunks(qa_pairs, doc_id=doc_id, source=source)
+        return store_chunks_to_milvus(
+            chunks=qa_chunks,
+            collection_name=collection_name,
+            milvus_host=milvus_host,
+            milvus_port=milvus_port,
+            embed_batch_size=embed_batch_size,
+            insert_batch_size=insert_batch_size,
+            dedupe_with_milvus=True,
+            dry_run=dry_run,
+            collection_description=collection_description,
+        )
+
+    log.info("No explicit Q&A format detected; using default chunking pipeline")
+    pages = [
+        {
+            "page": 1,
+            "narrative_text": normalized,
+        }
+    ]
+    return ingest_pages_to_milvus(
+        pages=pages,
+        doc_id=doc_id,
+        source=source,
+        collection_name=collection_name,
+        collection_description=collection_description,
+        milvus_host=milvus_host,
+        milvus_port=milvus_port,
+        embed_batch_size=embed_batch_size,
+        insert_batch_size=insert_batch_size,
+        enable_semantic_fallback=enable_semantic_fallback,
+        sim_threshold=sim_threshold,
+        use_percentile=use_percentile,
+        percentile=percentile,
+        dry_run=dry_run,
     )

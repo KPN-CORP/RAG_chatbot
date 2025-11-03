@@ -24,7 +24,7 @@ from config import (
 from modules.utils import extract_json_string, meta_filename, meta_page, _build_document_identifier
 
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
-from ingest.langchain_milvus_ingest import ingest_pages_to_milvus
+from ingest.langchain_milvus_ingest import ingest_pages_to_milvus, ingest_text_document
 from ingest.pdf_with_tables import extract_pdf_content
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -92,6 +92,87 @@ def _parse_ttl(value) -> Optional[int]:
         return None
 
 
+def _ingest_pdf_upload(*, data: bytes, upload: UploadFile, doc_id: str) -> tuple[int, int]:
+    """Persist PDF upload to disk, extract pages, and push them to Milvus."""
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(data)
+        tmp_path = tmp.name
+
+    try:
+        pages = extract_pdf_content(tmp_path)
+    except Exception as exc:  # pragma: no cover - pdf parsing issues
+        logger.exception(
+            "Failed to extract PDF content",
+            extra={"upload_filename": upload.filename, "doc_id": doc_id},
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to read PDF: {exc}") from exc
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            logger.debug("Temporary upload file already removed", extra={"path": tmp_path})
+
+    if not pages:
+        raise HTTPException(status_code=400, detail="No readable content found in PDF.")
+
+    try:
+        return ingest_pages_to_milvus(
+            pages=pages,
+            doc_id=doc_id,
+            source=upload.filename or doc_id,
+            collection_name=collection_name,
+            milvus_host=milvus_host,
+            milvus_port=milvus_port,
+            collection_description=collection_description,
+        )
+    except Exception as exc:  # pragma: no cover - ingestion pipeline errors
+        logger.exception(
+            "Failed to ingest document",
+            extra={"upload_filename": upload.filename, "doc_id": doc_id},
+        )
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
+
+
+def _ingest_text_upload(*, data: bytes, upload: UploadFile, doc_id: str) -> tuple[int, int]:
+    """Decode TXT uploads (with fallback) and ingest their contents."""
+
+    try:
+        text_content = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text_content = data.decode("latin-1")
+        except UnicodeDecodeError as exc:
+            logger.exception(
+                "Failed to decode text upload",
+                extra={"upload_filename": upload.filename, "doc_id": doc_id},
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="Unable to decode TXT file. Please upload UTF-8 encoded text.",
+            ) from exc
+
+    if not text_content.strip():
+        raise HTTPException(status_code=400, detail="No readable content found in TXT file.")
+
+    try:
+        return ingest_text_document(
+            text=text_content,
+            doc_id=doc_id,
+            source=upload.filename or doc_id,
+            collection_name=collection_name,
+            collection_description=collection_description,
+            milvus_host=milvus_host,
+            milvus_port=milvus_port,
+        )
+    except Exception as exc:  # pragma: no cover - ingestion pipeline errors
+        logger.exception(
+            "Failed to ingest text document",
+            extra={"upload_filename": upload.filename, "doc_id": doc_id},
+        )
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
+
+
 # ----- Endpoints -----
 @app.post("/session", response_model=CreateSessionResp)
 def create_session():
@@ -121,7 +202,7 @@ async def upload_document(
     file: UploadFile = File(...),
     ingest_token: str = Header(..., alias="X-Ingest-Token"),
 ):
-    """Ingest a user-provided PDF document into the Milvus knowledge base."""
+    """Ingest a user-provided PDF or TXT document into the Milvus knowledge base."""
 
     expected_token = _expected_ingest_token()
     if not expected_token:
@@ -134,9 +215,6 @@ async def upload_document(
         )
         raise HTTPException(status_code=401, detail="Invalid ingestion token.")
 
-    if file.content_type not in {"application/pdf", "application/x-pdf"}:
-        raise HTTPException(status_code=400, detail="Only PDF uploads are supported.")
-
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
@@ -147,46 +225,18 @@ async def upload_document(
         extra={"upload_filename": file.filename, "content_type": file.content_type}
     )
 
+    filename_lower = (file.filename or "").lower()
+    is_pdf_upload = file.content_type in {"application/pdf", "application/x-pdf"} or filename_lower.endswith(".pdf")
+    is_text_upload = file.content_type in {"text/plain"} or filename_lower.endswith(".txt")
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(data)
-        tmp_path = tmp.name
-
-    try:
-        pages = extract_pdf_content(tmp_path)
-    except Exception as exc:  # pragma: no cover - pdf parsing issues
-        logger.exception(
-            "Failed to extract PDF content",
-            extra={"upload_filename": file.filename, "doc_id": doc_id}
-        )
-        raise HTTPException(status_code=500, detail=f"Failed to read PDF: {exc}") from exc
-    finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            logger.debug("Temporary upload file already removed", extra={"path": tmp_path})
-
-    if not pages:
-        raise HTTPException(status_code=400, detail="No readable content found in PDF.")
+    if not is_pdf_upload and not is_text_upload:
+        raise HTTPException(status_code=400, detail="Only PDF or TXT uploads are supported.")
 
 
-
-    try:
-        skipped, inserted = ingest_pages_to_milvus(
-            pages=pages,
-            doc_id=doc_id,
-            source=file.filename or doc_id,
-            collection_name=collection_name,
-            milvus_host=milvus_host,
-            milvus_port=milvus_port,
-            collection_description=collection_description
-        )
-    except Exception as exc:  # pragma: no cover - ingestion pipeline errors
-        logger.exception(
-            "Failed to ingest document",
-            extra={"upload_filename": file.filename, "doc_id": doc_id},
-        )
-        raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
+    if is_pdf_upload:
+        skipped, inserted = _ingest_pdf_upload(data=data, upload=file, doc_id=doc_id)
+    else:
+        skipped, inserted = _ingest_text_upload(data=data, upload=file, doc_id=doc_id)
 
     logger.info(
         "Document ingestion completed",
