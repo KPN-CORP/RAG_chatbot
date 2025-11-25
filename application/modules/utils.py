@@ -9,9 +9,6 @@ from pathlib import Path
 import hashlib
 import os
 
-from config import google_api_key_name
-# from typing import List
-
 
 logger = get_logger(__name__)
 
@@ -82,11 +79,11 @@ def meta_page(meta: dict):
     m = unwrap_meta(meta)
     return m.get("page") or m.get("page_number") or m.get("pagenum")
 
-def resolve_embedding_api_key() -> str:
+def resolve_embedding_api_key(google_api_key_env: str) -> str:
     """Fetch the Gemini embedding API key using known environment fallbacks."""
 
     candidates = [
-        os.environ.get(google_api_key_name),
+        os.environ.get(google_api_key_env),
         os.environ.get("GEMINI_API_KEY"),
         os.environ.get("GOOGLE_API_KEY"),
     ]

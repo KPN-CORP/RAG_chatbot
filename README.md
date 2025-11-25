@@ -45,6 +45,12 @@ This repository contains experimentation notebooks and a production-ready FastAP
 
 3. Confirm the server is running by visiting the interactive docs: `http://localhost:8000/docs`.
 
+### Profiles and config selection
+
+- All chatbot endpoints accept an optional `profile` query/header parameter (for example, `POST /ask?profile=IRIS`). Leaving it empty keeps the legacy default behaviour and loads `application/config.py`.
+- A profile name picks up a matching config module named `config_{PROFILE}.py` (e.g., `config_IRIS.py`). Missing profiles log a warning and fall back to the default config so existing integrations keep working.
+- To add a new persona/configuration, drop a file like `application/config_FOOBOT.py` alongside the existing config files using the same variable names.
+
 ## 3. Stopping the server
 
 - Press `Ctrl+C` in the terminal where Uvicorn is running to gracefully stop the API.

@@ -9,11 +9,8 @@ End-to-end ingest with Gemini embeddings + Milvus storage.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
-
-from config import google_api_key_name, semantic_embedding_model_name, embedding_model_name
 
 # Chunking
 from ingest.chunking import build_chunks_from_pages
@@ -36,10 +33,6 @@ from pymilvus import (
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
-
-
-chunking_embeddings = get_huggingface_embeddings(semantic_embedding_model_name)
-gemini_embeddings = get_gemini_embeddings(embedding_model_name, api_key=resolve_embedding_api_key())
 
 
 _QA_PAIR_RE = re.compile(
@@ -100,9 +93,17 @@ def build_question_answer_chunks(
         )
     return chunks
 
-# -----------------------------
-# Records shaping (unchanged)
-# -----------------------------
+
+def _build_embeddings(config):
+    """Construct embeddings for the active profile config."""
+
+    chunking_embeddings = get_huggingface_embeddings(config.semantic_embedding_model_name)
+    gemini_embeddings = get_gemini_embeddings(
+        config.embedding_model_name,
+        api_key=resolve_embedding_api_key(config.google_api_key_name),
+        google_api_key_env=config.google_api_key_name,
+    )
+    return chunking_embeddings, gemini_embeddings
 
 
 def chunks_to_records(
@@ -135,11 +136,6 @@ def chunks_to_records(
         }
         out.append((cid, text, checksum, md))
     return out
-
-
-# -----------------------------
-# Milvus helpers
-# -----------------------------
 
 
 def ensure_collection_exists_with_schema(
@@ -239,13 +235,9 @@ def insert_with_pymilvus(
     coll.load()
 
 
-# -----------------------------
-# Embeddings
-# -----------------------------
-
-
 def embed_batch_texts(
     texts: List[str],
+    embeddings,
     batch_size: int,
     dry_run: bool = False,
 ) -> List[List[float]]:
@@ -253,23 +245,18 @@ def embed_batch_texts(
         dim = 1536
         return [[0.001 * ((i + 1) % 10) for _ in range(dim)] for i, _ in enumerate(texts)]
 
-    emb = gemini_embeddings
     out: List[List[float]] = []
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
-        vs = emb.embed_documents(batch)
+        vs = embeddings.embed_documents(batch)
         out.extend(vs)
     return out
-
-
-# -----------------------------
-# Storage pipeline
-# -----------------------------
 
 
 def store_chunks_to_milvus(
     chunks: List[Dict[str, Any]],
     collection_name: str,
+    embeddings,
     milvus_host: str = "127.0.0.1",
     milvus_port: int = 19530,
     embed_batch_size: int = 32,
@@ -288,7 +275,6 @@ def store_chunks_to_milvus(
 
     records = chunks_to_records(chunks)
 
-    # Collection existence (for dedupe)
     coll_exists = False
     try:
         if not dry_run:
@@ -297,7 +283,6 @@ def store_chunks_to_milvus(
     except Exception as e:
         log.warning("Milvus connection check failed: %s", e)
 
-    # Dedupe
     skipped = 0
     to_process = records
     if dedupe_with_milvus and coll_exists:
@@ -318,7 +303,6 @@ def store_chunks_to_milvus(
         log.info("No records to process after dedupe.")
         return skipped, 0
 
-    # Insert loop
     inserted = 0
     coll_obj: Optional[Collection] = None
     i = 0
@@ -336,6 +320,7 @@ def store_chunks_to_milvus(
 
         vectors = embed_batch_texts(
             texts,
+            embeddings=embeddings,
             batch_size=embed_batch_size,
             dry_run=dry_run,
         )
@@ -361,16 +346,12 @@ def store_chunks_to_milvus(
     return skipped, inserted
 
 
-# -----------------------------
-# Public: End-to-end ingest
-# -----------------------------
-
-
 def ingest_pages_to_milvus(
     pages: List[Dict[str, Any]],
     doc_id: str,
     source: str,
     collection_name: str,
+    config,
     collection_description: str = "",
     milvus_host: str = "127.0.0.1",
     milvus_port: int = 19530,
@@ -386,7 +367,9 @@ def ingest_pages_to_milvus(
     Build chunks with universal semantic grouping + (optional) long-text fallback,
     then embed & store in Milvus.
     """
-    # Embeddings object reused for grouping + fallback splitting. Use huggingface for cost.
+
+    chunking_embeddings, gemini_embeddings = _build_embeddings(config)
+
     chunks = build_chunks_from_pages(
         pages=pages,
         doc_id=doc_id,
@@ -402,6 +385,7 @@ def ingest_pages_to_milvus(
     return store_chunks_to_milvus(
         chunks=chunks,
         collection_name=collection_name,
+        embeddings=gemini_embeddings,
         milvus_host=milvus_host,
         milvus_port=milvus_port,
         embed_batch_size=embed_batch_size,
@@ -417,6 +401,7 @@ def ingest_text_document(
     doc_id: str,
     source: str,
     collection_name: str,
+    config,
     collection_description: str = "",
     milvus_host: str = "127.0.0.1",
     milvus_port: int = 19530,
@@ -433,6 +418,7 @@ def ingest_text_document(
     if not text:
         return 0, 0
 
+    chunking_embeddings, gemini_embeddings = _build_embeddings(config)
     normalized = _normalize_text(text)
     qa_pairs = detect_question_answer_pairs(normalized)
 
@@ -445,6 +431,7 @@ def ingest_text_document(
         return store_chunks_to_milvus(
             chunks=qa_chunks,
             collection_name=collection_name,
+            embeddings=gemini_embeddings,
             milvus_host=milvus_host,
             milvus_port=milvus_port,
             embed_batch_size=embed_batch_size,
@@ -466,6 +453,7 @@ def ingest_text_document(
         doc_id=doc_id,
         source=source,
         collection_name=collection_name,
+        config=config,
         collection_description=collection_description,
         milvus_host=milvus_host,
         milvus_port=milvus_port,
@@ -477,3 +465,11 @@ def ingest_text_document(
         percentile=percentile,
         dry_run=dry_run,
     )
+
+
+__all__ = [
+    "build_question_answer_chunks",
+    "detect_question_answer_pairs",
+    "ingest_pages_to_milvus",
+    "ingest_text_document",
+]

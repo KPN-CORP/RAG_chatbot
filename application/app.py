@@ -7,20 +7,9 @@ import time
 import json
 
 import redis
+from functools import lru_cache
 from typing import Optional
-from config import (
-    MAX_HISTORY_MESSAGES,
-    REDIS_URL,
-    SESSION_TTL_SECONDS,
-    collection_name,
-    collection_description,
-    gemini_chat_model,
-    google_api_key_name,
-    milvus_host,
-    milvus_port,
-    qa_system_prompt,
-    top_k_retrieval
-)
+from config_loader import load_config
 from modules.utils import extract_json_string, meta_filename, meta_page, _build_document_identifier
 
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
@@ -34,7 +23,7 @@ from langchain_core.runnables import RunnableLambda
 from langchain_google_genai import ChatGoogleGenerativeAI
 from logging_config import configure_logging, get_logger
 from modules.history_utils import build_chat_history_messages
-from modules.redis import RedisConversationMemory
+from modules.redis import RedisConversationMemory, build_redis_client
 from schemas.api import ChatReq, ChatResp, CreateSessionResp
 from schemas.rag_outputs import AnswerWithSources, format_docs_with_metadata
 from vectorstore.milvus_vectorstore import get_vectorstore
@@ -43,17 +32,39 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Configure logging once when the module is imported.
-configure_logging()
+# Configure logging using the default profile at import time; profile-specific
+# calls may further tweak the level at runtime if needed.
+default_config = load_config()
+configure_logging(getattr(default_config, "LOG_LEVEL", None))
 logger = get_logger(__name__)
 
-# ----- CONFIG -----
-r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 app = FastAPI()
 pydantic_parser = PydanticOutputParser(pydantic_object=AnswerWithSources)
 
-# Your already-created vectorstore (LangChain Milvus wrapper)
-vectorstore = get_vectorstore()
+
+@lru_cache(maxsize=None)
+def _redis_client(redis_url: str) -> redis.Redis:
+    """Return a cached Redis client for the provided URL."""
+
+    return build_redis_client(redis_url)
+
+
+def get_runtime_config(profile: str):
+    """Load the config for the requested profile and refresh logging level.
+
+    The profile maps to ``config_{PROFILE}.py`` (defaulting to ``config.py``)
+    so each request can use its own chatbot persona/configuration.
+    """
+
+    config = load_config(profile)
+    configure_logging(getattr(config, "LOG_LEVEL", None))
+    return config
+
+
+def get_redis_for_config(config):
+    """Return a Redis client bound to the active profile configuration."""
+
+    return _redis_client(config.REDIS_URL)
 
 
 # ----- Helpers (optional) -----
@@ -63,10 +74,10 @@ def _session_meta_key(sid: str) -> str:
     return f"session:{sid}:meta"
 
 
-def session_exists(sid: str) -> bool:
-    """Check whether a chat session already exists in Redis."""
+def session_exists_for_client(redis_client, sid: str) -> bool:
+    """Check whether a chat session already exists in Redis for this profile."""
 
-    return r.exists(_session_meta_key(sid)) == 1
+    return redis_client.exists(_session_meta_key(sid)) == 1
 
 def _expected_ingest_token() -> str:
     """Return the configured ingestion upload token from the environment."""
@@ -92,7 +103,9 @@ def _parse_ttl(value) -> Optional[int]:
         return None
 
 
-def _ingest_pdf_upload(*, data: bytes, upload: UploadFile, doc_id: str) -> tuple[int, int]:
+def _ingest_pdf_upload(
+    *, data: bytes, upload: UploadFile, doc_id: str, config
+) -> tuple[int, int]:
     """Persist PDF upload to disk, extract pages, and push them to Milvus."""
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -121,10 +134,11 @@ def _ingest_pdf_upload(*, data: bytes, upload: UploadFile, doc_id: str) -> tuple
             pages=pages,
             doc_id=doc_id,
             source=upload.filename or doc_id,
-            collection_name=collection_name,
-            milvus_host=milvus_host,
-            milvus_port=milvus_port,
-            collection_description=collection_description,
+            collection_name=config.collection_name,
+            config=config,
+            milvus_host=config.milvus_host,
+            milvus_port=config.milvus_port,
+            collection_description=config.collection_description,
         )
     except Exception as exc:  # pragma: no cover - ingestion pipeline errors
         logger.exception(
@@ -134,7 +148,9 @@ def _ingest_pdf_upload(*, data: bytes, upload: UploadFile, doc_id: str) -> tuple
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
 
 
-def _ingest_text_upload(*, data: bytes, upload: UploadFile, doc_id: str) -> tuple[int, int]:
+def _ingest_text_upload(
+    *, data: bytes, upload: UploadFile, doc_id: str, config
+) -> tuple[int, int]:
     """Decode TXT uploads (with fallback) and ingest their contents."""
 
     try:
@@ -160,10 +176,11 @@ def _ingest_text_upload(*, data: bytes, upload: UploadFile, doc_id: str) -> tupl
             text=text_content,
             doc_id=doc_id,
             source=upload.filename or doc_id,
-            collection_name=collection_name,
-            collection_description=collection_description,
-            milvus_host=milvus_host,
-            milvus_port=milvus_port,
+            collection_name=config.collection_name,
+            config=config,
+            collection_description=config.collection_description,
+            milvus_host=config.milvus_host,
+            milvus_port=config.milvus_port,
         )
     except Exception as exc:  # pragma: no cover - ingestion pipeline errors
         logger.exception(
@@ -175,16 +192,17 @@ def _ingest_text_upload(*, data: bytes, upload: UploadFile, doc_id: str) -> tupl
 
 # ----- Endpoints -----
 @app.post("/session", response_model=CreateSessionResp)
-def create_session():
+def create_session(profile: str = ""):
     """Create a new chat session backed by Redis."""
+    config = get_runtime_config(profile)  # empty profile → application/config.py
+    redis_client = get_redis_for_config(config)
     sid = str(uuid.uuid4())
     key = _session_meta_key(sid)
     created_at = int(time.time())
-    ttl = _parse_ttl(SESSION_TTL_SECONDS)
+    ttl = _parse_ttl(config.SESSION_TTL_SECONDS)
 
     try:
-        # Do HSET (+ optional EXPIRE) atomically
-        pipe = r.pipeline()
+        pipe = redis_client.pipeline()
         pipe.hset(key, mapping={"created_at": str(created_at)})
         if ttl is not None:
             pipe.expire(key, ttl)
@@ -193,7 +211,10 @@ def create_session():
         logger.exception("Failed to create chat session", extra={"session_id": sid})
         raise HTTPException(status_code=500, detail="Failed to create session")
 
-    logger.info("Created new chat session", extra={"session_id": sid, "ttl": ttl})
+    logger.info(
+        "Created new chat session",
+        extra={"session_id": sid, "ttl": ttl, "profile": profile or "default"},
+    )
     return {"session_id": sid}
 
 
@@ -201,9 +222,11 @@ def create_session():
 async def upload_document(
     file: UploadFile = File(...),
     ingest_token: str = Header(..., alias="X-Ingest-Token"),
+    profile: str = "",
 ):
     """Ingest a user-provided PDF or TXT document into the Milvus knowledge base."""
 
+    config = get_runtime_config(profile)  # empty profile → application/config.py
     expected_token = _expected_ingest_token()
     if not expected_token:
         logger.error("Missing ingestion token configuration")
@@ -234,9 +257,13 @@ async def upload_document(
 
 
     if is_pdf_upload:
-        skipped, inserted = _ingest_pdf_upload(data=data, upload=file, doc_id=doc_id)
+        skipped, inserted = _ingest_pdf_upload(
+            data=data, upload=file, doc_id=doc_id, config=config
+        )
     else:
-        skipped, inserted = _ingest_text_upload(data=data, upload=file, doc_id=doc_id)
+        skipped, inserted = _ingest_text_upload(
+            data=data, upload=file, doc_id=doc_id, config=config
+        )
 
     logger.info(
         "Document ingestion completed",
@@ -257,24 +284,37 @@ async def upload_document(
 
 
 @app.post("/ask", response_model=ChatResp)
-def chat(req: ChatReq):
+def chat(req: ChatReq, profile: str = ""):
     """Answer a user question using the retrieval augmented generation chain."""
+    config = get_runtime_config(profile)  # empty profile → application/config.py
+    redis_client = get_redis_for_config(config)
+    vectorstore = get_vectorstore(config)
 
-    logger.info("Received chat request", extra={"session_id": req.session_id})
+    logger.info(
+        "Received chat request",
+        extra={"session_id": req.session_id, "profile": profile or "default"},
+    )
 
-    # 1) Preconditions
     if not vectorstore:
         logger.error("Vectorstore is not initialised")
         raise HTTPException(status_code=500, detail="Vectorstore not wired in server.")
-    if not session_exists(req.session_id):
-        logger.warning("Chat request for unknown session", extra={"session_id": req.session_id})
+    if not session_exists_for_client(redis_client, req.session_id):
+        logger.warning(
+            "Chat request for unknown session", extra={"session_id": req.session_id}
+        )
         raise HTTPException(status_code=404, detail="Session not found. Create a session first.")
 
-    # 2) Create session-scoped memory helper (Redis)
-    mem = RedisConversationMemory(session_id=req.session_id, max_messages=MAX_HISTORY_MESSAGES)
+    mem = RedisConversationMemory(
+        session_id=req.session_id,
+        redis_client=redis_client,
+        max_messages=config.MAX_HISTORY_MESSAGES,
+        session_ttl_seconds=config.SESSION_TTL_SECONDS,
+    )
 
     # 3) Build retriever from vectorstore (and optionally wrap with a sanitizer)
-    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": top_k_retrieval})
+    retriever = vectorstore.as_retriever(
+        search_type="similarity", search_kwargs={"k": config.top_k_retrieval}
+    )
     # If you have a safe SanitizingRetriever (no LLM calls inside), use it; otherwise keep the plain retriever:
     # sanitized_retriever = SanitizingRetriever(retriever)
 
@@ -305,20 +345,20 @@ def chat(req: ChatReq):
 
     # 4) Build the LLM client (safe fetch of API key)
     api_key_value = os.environ.get(
-        google_api_key_name
+        config.google_api_key_name
     )  # ensure `google_api_key_name` is the env var name string from config
     if not api_key_value:
         logger.error(
             "Missing Google API key in environment",
-            extra={"env_var": google_api_key_name},
+            extra={"env_var": config.google_api_key_name},
         )
         raise HTTPException(status_code=500, detail="LLM API key not configured.")
-    llm = ChatGoogleGenerativeAI(model=gemini_chat_model, google_api_key=api_key_value)
+    llm = ChatGoogleGenerativeAI(model=config.gemini_chat_model, google_api_key=api_key_value)
 
     # 5) Build the prompt — USE a plain string {history} placeholder (avoid MessagesPlaceholder)
     qa_prompt = ChatPromptTemplate.from_messages(
         [
-            ("system", qa_system_prompt),
+            ("system", config.qa_system_prompt),
             MessagesPlaceholder(variable_name="chat_history"),  # inject conversation history here
             # ("system", "Use the following extracted documents to answer the user's question:\n\n{context}"),
             ("human", "{question}"),
