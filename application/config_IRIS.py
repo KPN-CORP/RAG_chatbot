@@ -40,10 +40,10 @@ Format output WAJIB:
 {{
   "answer": "Teks jawaban ringkas dan profesional; Gunakan numbering untuk merinci poin-poin utama agar mudah dibaca; Gunakan formatting Markdown (seperti _italic_ atau *bold*) untuk menekankan informasi penting; Jika ada catatan atau syarat penting, tambahkan bagian \"Catatan:\" di akhir.",
   "sources": [
-    {
+    {{
       "filename": "NamaFile.pdf",
       "page": 3
-    }
+    }}
   ]
 }}
 """
