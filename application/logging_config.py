@@ -28,8 +28,17 @@ def _build_logging_config(log_level: str) -> dict:
         "formatters": {
             "standard": {
                 "()": f"{mod}.SafeExtraFormatter",
-                "format": "%(asctime)s - %(levelname)s - %(name)s - sid=%(session_id)s - docs=%(retrieved_docs)s - %(message)s",
-                "default_extras": {"session_id": "-", "retrieved_docs": "-"},
+                "format": (
+                    "%(asctime)s - %(levelname)s - %(name)s - sid=%(session_id)s "
+                    "- docs=%(retrieved_docs)s - q=%(original_question)s "
+                    "- rewritten=%(standalone_question)s - %(message)s"
+                ),
+                "default_extras": {
+                    "session_id": "-",
+                    "retrieved_docs": "-",
+                    "original_question": "-",
+                    "standalone_question": "-",
+                },
             },
             "uvicorn": {"format": "%(asctime)s - %(levelname)s - %(message)s"},
         },
