@@ -102,6 +102,15 @@ The `application/` directory also contains utilities that can be invoked manuall
 - `clean_project.py` – housekeeping tasks such as clearing caches.
 - `modules/redis.py` – helper for managing Redis conversation memory.
 - `vectorstore/milvus_vectorstore.py` – wrapper to instantiate the Milvus vector store via LangChain.
+- `milvus_inspector.py` – CLI helper to list Milvus collections and preview the ingested document sources/chunks. For example:
+
+  ```bash
+  # Inspect every available collection using the default config
+  python application/milvus_inspector.py
+
+  # Look at a single collection with a custom profile and fetch up to 5 rows
+  python application/milvus_inspector.py --profile IRIS --collection company_policies --sample-limit 5
+  ```
 
 Refer to the module docstrings for advanced usage.
 
