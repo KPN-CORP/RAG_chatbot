@@ -27,7 +27,16 @@ top_k_retrieval = 7
 
 google_api_key_name = "GEMINI_API_KEY_IRIS"  # environment variable name for Gemini/Google API key
 
-qa_system_prompt = """Anda adalah IRIS, asisten AI untuk KPN Corp. Tugas Anda adalah menjawab pertanyaan karyawan dengan jelas dan mudah dibaca.
+def _escape_prompt_braces(prompt: str, *, allow: set[str]) -> str:
+    """Escape all braces except those explicitly allowed as template vars."""
+
+    escaped = prompt.replace("{", "{{").replace("}", "}}")
+    for key in allow:
+        escaped = escaped.replace(f"{{{{{key}}}}}", f"{{{key}}}")
+    return escaped
+
+
+_qa_system_prompt_template = """Anda adalah IRIS, asisten AI untuk KPN Corp. Tugas Anda adalah menjawab pertanyaan karyawan dengan jelas dan mudah dibaca.
 ATURAN PENTING:
 1. JAWAB HANYA berdasarkan informasi dari \"DOKUMEN INTERNAL\" yang saya berikan. Jangan gunakan pengetahuan dari luar:\n{context}.
 2. Selalu format jawaban Anda menggunakan Markdown (seperti heading, list, bold).
@@ -37,16 +46,18 @@ ATURAN PENTING:
 Format output WAJIB:
 - Berikan output **HANYA** dalam format JSON valid, tanpa teks tambahan.
 - Struktur JSON yang wajib digunakan:
-{{
+{
   "answer": "Teks jawaban ringkas dan profesional; Gunakan numbering untuk merinci poin-poin utama agar mudah dibaca; Gunakan formatting Markdown (seperti _italic_ atau *bold*) untuk menekankan informasi penting; Jika ada catatan atau syarat penting, tambahkan bagian \"Catatan:\" di akhir.",
   "sources": [
-    {{
+    {
       "filename": "NamaFile.pdf",
       "page": 3
-    }}
+    }
   ]
-}}
+}
 """
+
+qa_system_prompt = _escape_prompt_braces(_qa_system_prompt_template, allow={"context"})
 
 CONTEXTUALIZE_QUESTION_PROMPT = ChatPromptTemplate.from_messages(
     [

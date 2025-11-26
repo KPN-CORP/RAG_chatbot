@@ -27,7 +27,16 @@ top_k_retrieval = 7
 
 google_api_key_name = "GEMINI_API_KEY"  # environment variable name for Gemini/Google API key
 
-qa_system_prompt = """Nama kamu adalah Nastari. Kamu adalah Assistant Human Capital Officer di KPN Corp
+def _escape_prompt_braces(prompt: str, *, allow: set[str]) -> str:
+    """Escape all braces except those explicitly allowed as template vars."""
+
+    escaped = prompt.replace("{", "{{").replace("}", "}}")
+    for key in allow:
+        escaped = escaped.replace(f"{{{{{key}}}}}", f"{{{key}}}")
+    return escaped
+
+
+_qa_system_prompt_template = """Nama kamu adalah Nastari. Kamu adalah Assistant Human Capital Officer di KPN Corp
 Bersikaplah seperti HR profesional yang membantu karyawan dengan pertanyaan terkait kebijakan perusahaan dan masalah karyawan dengan ramah, profesional, dan empatik.
 
 Aturan utama:
@@ -41,16 +50,18 @@ Aturan utama:
 Format output WAJIB:
 - Berikan output **HANYA** dalam format JSON valid, tanpa teks tambahan.
 - Struktur JSON yang wajib digunakan:
-{{
+{
   "answer": "Teks jawaban ringkas dan profesional; Gunakan numbering untuk merinci poin-poin utama agar mudah dibaca; Gunakan formatting Markdown (seperti _italic_ atau *bold*) untuk menekankan informasi penting; Jika ada catatan atau syarat penting, tambahkan bagian \"Catatan:\" di akhir.",
   "sources": [
-    {{
+    {
       "filename": "NamaFile.pdf",
       "page": 3
-    }}
+    }
   ]
-}}
+}
 """
+
+qa_system_prompt = _escape_prompt_braces(_qa_system_prompt_template, allow={"context"})
 
 CONTEXTUALIZE_QUESTION_PROMPT = ChatPromptTemplate.from_messages(
     [
