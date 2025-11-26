@@ -78,7 +78,7 @@ def show_collection_overview(collection_name: str, sample_limit: int) -> None:
     collection.load()
 
     logger.info(
-        "Inspecting collection", extra={"name": collection_name, "entities": collection.num_entities}
+        "Inspecting collection", extra={"collection": collection_name, "entities": collection.num_entities},
     )
 
     records = fetch_collection_records(collection, sample_limit)
