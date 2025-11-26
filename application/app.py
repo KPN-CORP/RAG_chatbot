@@ -362,6 +362,15 @@ def chat(req: ChatReq, profile: str = ""):
                 "history_for_rewrite": history_for_rewrite,
             }
         )
+        if debug_retrieval:
+            logger.debug(
+                "Contextualized question generated",
+                extra={
+                    "session_id": req.session_id,
+                    "original_question": req.question,
+                    "standalone_question": standalone_question,
+                },
+            )
     except Exception:
         logger.exception(
             "Failed to contextualize question", extra={"session_id": req.session_id}
