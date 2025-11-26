@@ -3,18 +3,13 @@
 from __future__ import annotations
 
 import os
+from functools import lru_cache
 from typing import Optional
 
-from config import (
-    collection_name,
-    embedding_model_name,
-    google_api_key_name,
-    milvus_host,
-    milvus_port,
-)
 from langchain_milvus import Milvus
 from logging_config import get_logger
 from models.embbedings import get_gemini_embeddings
+from modules.utils import resolve_embedding_api_key
 from pymilvus import connections
 from dotenv import load_dotenv
 
@@ -22,12 +17,12 @@ load_dotenv()
 logger = get_logger(__name__)
 
 
-def _resolve_api_key(explicit_key: Optional[str]) -> Optional[str]:
+def _resolve_api_key(google_api_key_name: str, explicit_key: Optional[str]) -> Optional[str]:
     """Return the API key to use for embeddings, preferring explicit overrides."""
 
     if explicit_key:
         return explicit_key
-    env_value = os.environ.get(google_api_key_name)
+    env_value = resolve_embedding_api_key(google_api_key_name)
     if env_value:
         return env_value
     logger.warning(
@@ -37,8 +32,16 @@ def _resolve_api_key(explicit_key: Optional[str]) -> Optional[str]:
     return None
 
 
-def get_vectorstore() -> Milvus:
-    """Initialise and return the Milvus vector store configured for Gemini embeddings."""
+@lru_cache(maxsize=None)
+def _build_vectorstore(
+    config_module_name: str,
+    collection_name: str,
+    milvus_host: str,
+    milvus_port: str,
+    embedding_model_name: str,
+    google_api_key_name: str,
+) -> Milvus:
+    """Cache and return a Milvus vector store for the given configuration."""
 
     logger.info(
         "Connecting to Milvus",
@@ -46,8 +49,12 @@ def get_vectorstore() -> Milvus:
     )
     connections.connect(alias="default", host=milvus_host, port=milvus_port)
 
-    api_key = _resolve_api_key(os.environ.get(google_api_key_name))
-    embeddings = get_gemini_embeddings(embedding_model_name, api_key)
+    api_key = _resolve_api_key(google_api_key_name, os.environ.get(google_api_key_name))
+    embeddings = get_gemini_embeddings(
+        embedding_model_name,
+        api_key,
+        google_api_key_env=google_api_key_name,
+    )
 
     vectorstore_kwargs = {
         "embedding_function": embeddings,
@@ -76,3 +83,19 @@ def get_vectorstore() -> Milvus:
     except Exception:
         logger.exception("Failed to initialise Milvus vector store")
         raise
+
+
+def get_vectorstore(config) -> Milvus:
+    """Initialise and return the Milvus vector store for the provided config."""
+
+    return _build_vectorstore(
+        config.__name__,
+        config.collection_name,
+        config.milvus_host,
+        str(config.milvus_port),
+        config.embedding_model_name,
+        config.google_api_key_name,
+    )
+
+
+__all__ = ["get_vectorstore"]

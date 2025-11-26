@@ -1,19 +1,18 @@
-"""Helpers for storing and retrieving chat history from Redis."""
-
-import json
 from typing import List, Optional, Tuple
 
+import json
 import redis
-from config import MAX_HISTORY_MESSAGES, REDIS_URL, SESSION_TTL_SECONDS
 from logging_config import get_logger
 
-r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 logger = get_logger(__name__)
 
 
-# ----- Helpers for Redis history -----
-# Key patterns:
-# "session:{session_id}:history" -> Redis list of JSON items: [{"role":"user","text":...}, {"role":"assistant","text":..., "sources":[...]}, ...]
+def build_redis_client(redis_url: str) -> redis.Redis:
+    """Create a Redis client for the supplied URL."""
+
+    return redis.Redis.from_url(redis_url, decode_responses=True)
+
+
 def _history_key(session_id: str) -> str:
     """Return the canonical Redis key that stores history for *session_id*."""
 
@@ -21,6 +20,8 @@ def _history_key(session_id: str) -> str:
 
 
 def append_history_item(
+    redis_client: redis.Redis,
+    session_ttl_seconds: int,
     session_id: str,
     role: str,
     text: str,
@@ -32,8 +33,8 @@ def append_history_item(
     if sources:
         item["sources"] = sources
     payload = json.dumps(item)
-    r.rpush(_history_key(session_id), payload)
-    r.expire(_history_key(session_id), SESSION_TTL_SECONDS)  # optional
+    redis_client.rpush(_history_key(session_id), payload)
+    redis_client.expire(_history_key(session_id), session_ttl_seconds)
     logger.debug(
         "Appended history item",
         extra={
@@ -44,11 +45,13 @@ def append_history_item(
     )
 
 
-def load_recent_history(session_id: str, n: int = MAX_HISTORY_MESSAGES) -> List[dict]:
+def load_recent_history(
+    redis_client: redis.Redis, session_id: str, n: int
+) -> List[dict]:
     """Return up to *n* most recent history entries for *session_id*."""
 
     key = _history_key(session_id)
-    raw = r.lrange(key, -n, -1) if r.exists(key) else []
+    raw = redis_client.lrange(key, -n, -1) if redis_client.exists(key) else []
     items = [json.loads(x) for x in raw]
     logger.debug(
         "Loaded recent history",
@@ -57,15 +60,28 @@ def load_recent_history(session_id: str, n: int = MAX_HISTORY_MESSAGES) -> List[
     return items
 
 
-# Redis-backed "memory-like" helper (mimics old ConversationBufferMemory enough for drop-in)
+def session_exists(redis_client: redis.Redis, session_id: str) -> bool:
+    """Check whether a chat session already exists in Redis."""
+
+    return redis_client.exists(f"session:{session_id}:meta") == 1
+
+
 class RedisConversationMemory:
     """Lightweight conversation buffer that persists turns in Redis."""
 
-    def __init__(self, session_id: str, max_messages: int = MAX_HISTORY_MESSAGES) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        redis_client: redis.Redis,
+        max_messages: int,
+        session_ttl_seconds: int,
+    ) -> None:
         """Create a memory helper for *session_id* limited to *max_messages*."""
 
         self.session_id = session_id
         self.max_messages = max_messages
+        self.redis_client = redis_client
+        self.session_ttl_seconds = session_ttl_seconds
         logger.debug(
             "Initialised RedisConversationMemory",
             extra={"session_id": session_id, "max_messages": max_messages},
@@ -74,7 +90,7 @@ class RedisConversationMemory:
     def load(self) -> List[dict]:
         """Return the raw history payload for the configured session."""
 
-        history = load_recent_history(self.session_id, n=self.max_messages)
+        history = load_recent_history(self.redis_client, self.session_id, n=self.max_messages)
         logger.debug(
             "Loaded history for conversation",
             extra={"session_id": self.session_id, "items": len(history)},
@@ -84,10 +100,6 @@ class RedisConversationMemory:
     def get_chat_history_pairs(self) -> List[Tuple[str, str]]:
         """Return normalized ``(user, assistant)`` message tuples for LangChain."""
 
-        # If there are stray messages they will be handled reasonably:
-        #   - user followed by assistant -> paired
-        #   - user without assistant -> (user, "")
-        #   - assistant without preceding user -> ("", assistant)
         recent = self.load()
         pairs = []
         i = 0
@@ -96,7 +108,6 @@ class RedisConversationMemory:
             if recent[i]["role"] == "user":
                 user_text = recent[i]["text"]
                 assistant_text = ""
-                # find next assistant message immediately following (not skipping other users)
                 if i + 1 < n and recent[i + 1]["role"] == "assistant":
                     assistant_text = recent[i + 1]["text"]
                     i += 2
@@ -104,7 +115,6 @@ class RedisConversationMemory:
                     i += 1
                 pairs.append((user_text, assistant_text))
             else:
-                # assistant without preceding user -> preserve it as ("", assistant)
                 pairs.append(("", recent[i]["text"]))
                 i += 1
         return pairs
@@ -112,7 +122,13 @@ class RedisConversationMemory:
     def add_user_message(self, text: str) -> None:
         """Persist a user utterance and refresh the session TTL."""
 
-        append_history_item(self.session_id, "user", text)
+        append_history_item(
+            self.redis_client,
+            self.session_ttl_seconds,
+            self.session_id,
+            "user",
+            text,
+        )
         logger.info(
             "Stored user message",
             extra={"session_id": self.session_id, "preview": text[:100]},
@@ -125,7 +141,14 @@ class RedisConversationMemory:
     ) -> None:
         """Persist an assistant message optionally enriched with sources."""
 
-        append_history_item(self.session_id, "assistant", text, sources=sources)
+        append_history_item(
+            self.redis_client,
+            self.session_ttl_seconds,
+            self.session_id,
+            "assistant",
+            text,
+            sources=sources,
+        )
         logger.info(
             "Stored assistant message",
             extra={
@@ -134,3 +157,12 @@ class RedisConversationMemory:
                 "has_sources": bool(sources),
             },
         )
+
+
+__all__ = [
+    "RedisConversationMemory",
+    "append_history_item",
+    "build_redis_client",
+    "load_recent_history",
+    "session_exists",
+]

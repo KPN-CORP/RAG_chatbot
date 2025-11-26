@@ -2,8 +2,6 @@
 
 import os
 from typing import Optional
-
-from config import google_api_key_name
 from langchain_huggingface import HuggingFaceEmbeddings
 from logging_config import get_logger
 from dotenv import load_dotenv
@@ -39,14 +37,15 @@ def get_huggingface_embeddings(semantic_embedding_model_name: str) -> HuggingFac
 def get_gemini_embeddings(
     embedding_model_name: str,
     api_key: Optional[str] = None,
+    google_api_key_env: str | None = None,
 ):
     """Return Google Gemini embeddings, attempting sensible API-key fallbacks."""
 
     api_key_eff = (
         api_key
+        or (os.environ.get(google_api_key_env) if google_api_key_env else None)
         or os.environ.get("GEMINI_API_KEY")
         or os.environ.get("GOOGLE_API_KEY")
-        or os.environ.get(google_api_key_name)
     )
     if not api_key_eff:
         logger.warning("No Gemini API key available for embeddings")

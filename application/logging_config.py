@@ -5,12 +5,8 @@ from __future__ import annotations
 import logging
 import os
 from logging.config import dictConfig
-from config import LOG_LEVEL
 
 DEFAULT_LOG_LEVEL = "INFO"
-
-# logging_config.py
-import logging
 
 class SafeExtraFormatter(logging.Formatter):
     def __init__(self, *args, default_extras=None, **kwargs):
@@ -57,7 +53,7 @@ def _build_logging_config(log_level: str) -> dict:
 
 
 
-def configure_logging() -> None:
+def configure_logging(log_level: str | None = None) -> None:
     """Configure logging for the FastAPI application.
 
     The configuration is idempotent and may be called multiple times. The
@@ -66,9 +62,9 @@ def configure_logging() -> None:
     existing loggers enabled so we can see access logs alongside our
     application logs.
     """
-
-    log_level = LOG_LEVEL.upper() if LOG_LEVEL else DEFAULT_LOG_LEVEL
-    dictConfig(_build_logging_config(log_level))
+    log_level_env = os.getenv("APP_LOG_LEVEL")
+    effective_log_level = (log_level or log_level_env or DEFAULT_LOG_LEVEL).upper()
+    dictConfig(_build_logging_config(effective_log_level))
 
 
 def get_logger(name: str | None = None) -> logging.Logger:
