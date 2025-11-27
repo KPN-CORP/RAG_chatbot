@@ -489,7 +489,7 @@ def chat(req: ChatReq, profile: str = ""):
 
     # Pull assistant answer and source documents
     try:
-        assistant_text = result.answer or result.result or ""
+        assistant_text = result.answer or ""
         sources_meta = result.sources or []
 
         # 10) Save the turn into Redis after successful call: user then assistant
