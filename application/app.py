@@ -404,11 +404,18 @@ def chat(req: ChatReq, profile: str = ""):
     qa_prompt = ChatPromptTemplate.from_messages(
         [
             ("system", config.qa_system_prompt),
-            ("system", "Gunakan konteks berikut untuk menjawab pertanyaan karyawan:\n{context}"),
+            (
+                "system",
+                (
+                    "Gunakan konteks berikut untuk menjawab pertanyaan karyawan:\n{context}\n\n"
+                    "Ikuti instruksi format berikut agar output bisa diparsing secara otomatis:\n"
+                    "{format_instructions}"
+                ),
+            ),
             MessagesPlaceholder(variable_name="chat_history"),  # inject conversation history here
             ("human", "{question}"),
         ]
-    )
+    ).partial(format_instructions=pydantic_parser.get_format_instructions())
 
     # 6) Build the RAG chain (components + flow)
     if debug_retrieval:
