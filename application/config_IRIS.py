@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+from langchain_core.prompts import ChatPromptTemplate
 
 LOG_LEVEL = "INFO" # options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 
@@ -26,7 +27,16 @@ top_k_retrieval = 7
 
 google_api_key_name = "GEMINI_API_KEY_IRIS"  # environment variable name for Gemini/Google API key
 
-qa_system_prompt = """Anda adalah IRIS, asisten AI untuk KPN Corp. Tugas Anda adalah menjawab pertanyaan karyawan dengan jelas dan mudah dibaca.
+def _escape_prompt_braces(prompt: str, *, allow: set[str]) -> str:
+    """Escape all braces except those explicitly allowed as template vars."""
+
+    escaped = prompt.replace("{", "{{").replace("}", "}}")
+    for key in allow:
+        escaped = escaped.replace(f"{{{{{key}}}}}", f"{{{key}}}")
+    return escaped
+
+
+_qa_system_prompt_template = """Anda adalah IRIS, asisten AI untuk KPN Corp. Tugas Anda adalah menjawab pertanyaan karyawan dengan jelas dan mudah dibaca.
 ATURAN PENTING:
 1. JAWAB HANYA berdasarkan informasi dari \"DOKUMEN INTERNAL\" yang saya berikan. Jangan gunakan pengetahuan dari luar:\n{context}.
 2. Selalu format jawaban Anda menggunakan Markdown (seperti heading, list, bold).
@@ -36,21 +46,46 @@ ATURAN PENTING:
 Format output WAJIB:
 - Berikan output **HANYA** dalam format JSON valid, tanpa teks tambahan.
 - Struktur JSON yang wajib digunakan:
-{{
-  "answer": "Teks jawaban ringkas dan profesional; Gunakan numbering untuk merinci poin-poin utama agar mudah dibaca; Gunakan formatting Markdown (seperti _italic_ atau *bold*) untuk menekankan informasi penting; Jika ada catatan atau syarat penting, tambahkan bagian "Catatan:" di akhir.",
+{
+  "answer": "Teks jawaban ringkas dan profesional; Gunakan numbering untuk merinci poin-poin utama agar mudah dibaca; Gunakan formatting Markdown (seperti _italic_ atau *bold*) untuk menekankan informasi penting; Jika ada catatan atau syarat penting, tambahkan bagian \"Catatan:\" di akhir.",
   "sources": [
-    {{
+    {
       "filename": "NamaFile.pdf",
       "page": 3
-    }}
+    }
   ]
-}}
+}
 """
 
-contextualize_prompt = """Nama kamu adalah Nastari. Kamu adalah asisten AI di bidang HR di perusahaan KPN-Corp. 
-Tugasmu adalah membantu membuat ulang pertanyaan karyawan menjadi bentuk yang jelas dan berdiri sendiri. 
+qa_system_prompt = _escape_prompt_braces(_qa_system_prompt_template, allow={"context"})
 
-Diberikan riwayat percakapan dan pertanyaan terbaru dari karyawan, 
-buat ulang pertanyaan tersebut sehingga bisa dipahami tanpa melihat riwayat percakapan. 
-Jangan menjawab pertanyaan. Jika pertanyaan sudah jelas, kembalikan apa adanya."""
-
+CONTEXTUALIZE_QUESTION_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            (
+                "You are a query rewriter for an HR assistant.\n"
+                "Your job is to transform an incomplete, short, or ambiguous user question "
+                "into a standalone, well-specified question that an HR knowledge base search "
+                "engine can use.\n\n"
+                "Domain: Human Capital / HR policies, procedures, benefits, and services at KPN Corp.\n"
+                "- Use the same language as the user (Indonesian or English).\n"
+                "- Use chat history ONLY to resolve references or ellipsis such as:\n"
+                "  'itu', 'yang tadi', 'seperti sebelumnya', 'bagaimana jika dua hari', "
+                "  'kalau lebih lama?', 'yang cuti itu', etc.\n"
+                "- If the latest question is a follow-up that depends on the previous topic, "
+                "  expand it into a full standalone question including that topic.\n"
+                "- Do NOT answer the question.\n"
+                "- Return exactly ONE rewritten question, concise but specific.\n"
+            ),
+        ),
+        (
+            "human",
+            (
+                "Chat history:\n{chat_history}\n\n"
+                "Latest user question:\n{input}\n\n"
+                "Rewrite the latest user question as ONE standalone search query:"
+            ),
+        ),
+    ]
+)

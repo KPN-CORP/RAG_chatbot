@@ -16,7 +16,8 @@ from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from ingest.langchain_milvus_ingest import ingest_pages_to_milvus, ingest_text_document
 from ingest.pdf_with_tables import extract_pdf_content
 from langchain.output_parsers import PydanticOutputParser
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda
 
 # LangChain imports (use provider wrapper)
@@ -311,6 +312,15 @@ def chat(req: ChatReq, profile: str = ""):
         session_ttl_seconds=config.SESSION_TTL_SECONDS,
     )
 
+    raw_history = mem.get_chat_history_pairs()  # whatever your Redis class returns
+    chat_history_messages = build_chat_history_messages(raw_history)  # returns List[BaseMessage]
+    history_for_rewrite = "\n".join(
+        [
+            f"User: {m.content}" if getattr(m, "type", "") == "human" else f"Assistant: {m.content}"
+            for m in chat_history_messages
+        ]
+    )
+
     # 3) Build retriever from vectorstore (and optionally wrap with a sanitizer)
     retriever = vectorstore.as_retriever(
         search_type="similarity", search_kwargs={"k": config.top_k_retrieval}
@@ -321,27 +331,6 @@ def chat(req: ChatReq, profile: str = ""):
     debug_retrieval = bool(getattr(req, "debug_retrieval", False))
     retrieved_docs = []
     formatted_context = None
-
-    if debug_retrieval:
-        # Fetch documents once so they can be reused for both the prompt context and
-        # any downstream logging/inspection in this function.
-        try:
-            retrieved_docs = retriever.invoke(req.question) or []
-            for i, d in enumerate(retrieved_docs, 1):
-                logger.debug({
-                    "i": i,
-                    "chunk": d.page_content,
-                    "filename": meta_filename(d.metadata),
-                    "page": meta_page(d.metadata),
-                    "keys": list(d.metadata.keys())
-                })
-        except Exception:
-            logger.exception("Failed to retrieve documents", extra={"session_id": req.session_id})
-            raise HTTPException(status_code=500, detail="Retriever error while fetching documents.")
-
-        # Prepare the formatted context string once so the chain does not need to
-        # re-run document formatting internally.
-        formatted_context = format_docs_with_metadata(retrieved_docs)
 
     # 4) Build the LLM client (safe fetch of API key)
     api_key_value = os.environ.get(
@@ -355,12 +344,68 @@ def chat(req: ChatReq, profile: str = ""):
         raise HTTPException(status_code=500, detail="LLM API key not configured.")
     llm = ChatGoogleGenerativeAI(model=config.gemini_chat_model, google_api_key=api_key_value)
 
+    contextualize_chain = (
+        {
+            "chat_history": (lambda x: x["history_for_rewrite"]),
+            "input": (lambda x: x["question"]),
+        }
+        | config.CONTEXTUALIZE_QUESTION_PROMPT
+        | llm
+        | StrOutputParser()
+    )
+
+    try:
+        standalone_question = contextualize_chain.invoke(
+            {
+                "question": req.question,
+                "chat_history": chat_history_messages,
+                "history_for_rewrite": history_for_rewrite,
+            }
+        )
+        if debug_retrieval:
+            logger.debug(
+                "Contextualized question generated",
+                extra={
+                    "session_id": req.session_id,
+                    "original_question": req.question,
+                    "standalone_question": standalone_question,
+                },
+            )
+    except Exception:
+        logger.exception(
+            "Failed to contextualize question", extra={"session_id": req.session_id}
+        )
+        raise HTTPException(status_code=500, detail="Failed to rewrite question for retrieval.")
+
+    if debug_retrieval:
+        # Fetch documents once so they can be reused for both the prompt context and
+        # any downstream logging/inspection in this function.
+        try:
+            retrieved_docs = retriever.invoke(standalone_question) or []
+            for i, d in enumerate(retrieved_docs, 1):
+                logger.debug(
+                    {
+                        "i": i,
+                        "chunk": d.page_content,
+                        "filename": meta_filename(d.metadata),
+                        "page": meta_page(d.metadata),
+                        "keys": list(d.metadata.keys()),
+                    }
+                )
+        except Exception:
+            logger.exception("Failed to retrieve documents", extra={"session_id": req.session_id})
+            raise HTTPException(status_code=500, detail="Retriever error while fetching documents.")
+
+        # Prepare the formatted context string once so the chain does not need to
+        # re-run document formatting internally.
+        formatted_context = format_docs_with_metadata(retrieved_docs)
+
     # 5) Build the prompt — USE a plain string {history} placeholder (avoid MessagesPlaceholder)
     qa_prompt = ChatPromptTemplate.from_messages(
         [
             ("system", config.qa_system_prompt),
+            ("system", "Gunakan konteks berikut untuk menjawab pertanyaan karyawan:\n{context}"),
             MessagesPlaceholder(variable_name="chat_history"),  # inject conversation history here
-            # ("system", "Use the following extracted documents to answer the user's question:\n\n{context}"),
             ("human", "{question}"),
         ]
     )
@@ -371,8 +416,8 @@ def chat(req: ChatReq, profile: str = ""):
             {
                 # The retrieved docs are pre-fetched and formatted to a context string above.
                 "context": (lambda x: x["context"]),
-                # The original 'question' is passed through unchanged.
-                "question": (lambda x: x["question"]),
+                # The rewritten question is passed through unchanged.
+                "question": (lambda x: x["standalone_question"]),
                 # The 'chat_history' is passed through unchanged.
                 "chat_history": (lambda x: x["chat_history"]),
             }
@@ -384,11 +429,11 @@ def chat(req: ChatReq, profile: str = ""):
     else:
         rag_chain = (
             {
-                # The retriever runs first, using the original question.
+                # The retriever runs first, using the rewritten standalone question.
                 # Its output is passed to format_docs and becomes the 'context'.
-                "context": (lambda x: x["question"]) | retriever | format_docs_with_metadata,
-                # The original 'question' is passed through unchanged.
-                "question": (lambda x: x["question"]),
+                "context": (lambda x: x["standalone_question"]) | retriever | format_docs_with_metadata,
+                # The rewritten question is passed through unchanged.
+                "question": (lambda x: x["standalone_question"]),
                 # The 'chat_history' is passed through unchanged.
                 "chat_history": (lambda x: x["chat_history"]),
             }
@@ -398,16 +443,10 @@ def chat(req: ChatReq, profile: str = ""):
             | pydantic_parser
         )
 
-    # 7) Load raw history from Redis and normalize to BaseMessage list (helper)
-    raw_history = mem.get_chat_history_pairs()  # whatever your Redis class returns
-    chat_history_messages = build_chat_history_messages(raw_history)  # returns List[BaseMessage]
-
-    # Debug print to inspect normalized messages (types and content preview)
-    # print("chat_history_messages in app.py:", chat_history_messages)
-
     # 8) Invoke the chain; pass 'history' (string) and let the chain fetch context from retriever
     invoke_payload = {
         "question": req.question,
+        "standalone_question": standalone_question,
         "chat_history": chat_history_messages,
     }
     if debug_retrieval:
@@ -450,7 +489,7 @@ def chat(req: ChatReq, profile: str = ""):
 
     # Pull assistant answer and source documents
     try:
-        assistant_text = result.answer or result.result or ""
+        assistant_text = result.answer or ""
         sources_meta = result.sources or []
 
         # 10) Save the turn into Redis after successful call: user then assistant
