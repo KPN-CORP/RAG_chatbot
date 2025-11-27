@@ -10,13 +10,21 @@ DEFAULT_LOG_LEVEL = "INFO"
 
 class SafeExtraFormatter(logging.Formatter):
     def __init__(self, *args, default_extras=None, **kwargs):
-        super().__init__(*args, **kwargs)
         self.default_extras = default_extras or {}
+        super().__init__(*args, **kwargs)
 
     def format(self, record):
         for k, v in self.default_extras.items():
             if not hasattr(record, k):
                 setattr(record, k, v)
+
+        extras = []
+        for key, default in self.default_extras.items():
+            value = getattr(record, key, default)
+            if value not in (None, "", default):
+                extras.append(f"{key}={value}")
+        record.extra_fields = (" - " + " - ".join(extras)) if extras else ""
+
         return super().format(record)
     
 
@@ -28,11 +36,7 @@ def _build_logging_config(log_level: str) -> dict:
         "formatters": {
             "standard": {
                 "()": f"{mod}.SafeExtraFormatter",
-                "format": (
-                    "%(asctime)s - %(levelname)s - %(name)s - sid=%(session_id)s "
-                    "- docs=%(retrieved_docs)s - q=%(original_question)s "
-                    "- rewritten=%(standalone_question)s - %(message)s"
-                ),
+                "format": "%(asctime)s - %(levelname)s - %(name)s%(extra_fields)s - %(message)s",
                 "default_extras": {
                     "session_id": "-",
                     "retrieved_docs": "-",
