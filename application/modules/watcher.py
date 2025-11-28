@@ -118,3 +118,7 @@ def run_watcher():
     observer.join()
     worker_thread.join()
     print("Watcher stopped.")
+
+
+if __name__ == "__main__":
+    run_watcher()
