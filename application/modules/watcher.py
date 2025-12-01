@@ -45,14 +45,14 @@ class DocsEventHandler(FileSystemEventHandler):
         if event.is_directory or not should_index(event.src_path):
             return
         print(f"[DELETED] {event.src_path}")
-#         delete_file_from_milvus(event.src_path)
+#         delete_file_from_milvus(event.src_path)   # Implement this function to handle deletion
 
     def on_moved(self, event):
         if event.is_directory:
             return
         if should_index(event.src_path):
             print(f"[MOVED-OLD] {event.src_path}")
-#             delete_file_from_milvus(event.src_path)
+#             delete_file_from_milvus(event.src_path) # Implement this function to handle deletion
         if should_index(event.dest_path):
             print(f"[MOVED-NEW] {event.dest_path}")
             mark_dirty(event.dest_path)
@@ -76,7 +76,7 @@ def debounce_worker():
         for path in to_process:
             if os.path.exists(path):
                 print(f"[INGEST] {path}")
-#                 upsert_file_to_milvus(path)
+#                 upsert_file_to_milvus(path) # Implement this function to handle the actual ingestion
             else:
                 # File vanished between event and worker
                 print(f"[SKIP] {path} no longer exists")
@@ -96,20 +96,9 @@ def run_watcher():
     worker_thread.start()
 
     print(f"Watching {WATCH_DIR} for changes...")
-    # ===========================================
-    # i = 0
-    # ===========================================
     try:
         while True:
             time.sleep(1)
-            # ===========================================
-            # i+=1
-            # if i>60:
-            #     print("Already one minute...")
-            #     stop_event.set()
-            #     observer.stop()
-            #     break
-            # ===========================================
     except KeyboardInterrupt:
         print("Stopping watcher...")
         stop_event.set()
