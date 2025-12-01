@@ -519,7 +519,12 @@ def chat(req: ChatReq, profile: str = ""):
             extra={"session_id": req.session_id, "error": str(exc)},
         )
 
-    # 11) Ensure return types match Pydantic model
+    # 11) Ensure return types match Pydantic model. IRIS has a slimmer contract
+    # (no sources) to satisfy upstream expectations, while other profiles keep
+    # the full payload with citations for downstream consumers.
+    if profile and profile.upper() == "IRIS":
+        return {"answer": assistant_text, "not_found": not_found}
+
     return {"answer": assistant_text, "sources": sources_meta, "not_found": not_found}
 
 
