@@ -24,8 +24,14 @@ class ChatReq(BaseModel):
 
 
 class ChatResp(BaseModel):
-    """Response body for the main chat endpoint."""
+    """Response body for the main chat endpoint.
+
+    The IRIS profile omits ``sources`` in its payload to satisfy a lightweight
+    contract, while other profiles keep returning sources alongside the answer.
+    ``not_found`` is always included to hint whether any citations were
+    available.
+    """
 
     answer: str
-    sources: List[Source]  # <-- More robust and type-safe!
-    # not_found: bool = False
+    sources: List[Source] | None = None
+    not_found: bool = False

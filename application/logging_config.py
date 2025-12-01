@@ -14,16 +14,31 @@ class SafeExtraFormatter(logging.Formatter):
         super().__init__(*args, **kwargs)
 
     def format(self, record):
-        for k, v in self.default_extras.items():
-            if not hasattr(record, k):
-                setattr(record, k, v)
+        standard_attrs = logging.LogRecord(
+            name=None, level=None, pathname="", lineno=0, msg="", args=(), exc_info=None
+        ).__dict__.keys()
 
-        extras = []
+        # Ensure default extras exist on the record so format strings don't fail
+        for key, default in self.default_extras.items():
+            if not hasattr(record, key):
+                setattr(record, key, default)
+
+        extras: dict[str, object] = {}
+
+        # Start with configured defaults (shown only when overridden)
         for key, default in self.default_extras.items():
             value = getattr(record, key, default)
             if value not in (None, "", default):
-                extras.append(f"{key}={value}")
-        record.extra_fields = (" - " + " - ".join(extras)) if extras else ""
+                extras[key] = value
+
+        # Include any other "extra" attributes provided on the LogRecord
+        for key, value in record.__dict__.items():
+            if key in standard_attrs or key == "extra_fields" or key in self.default_extras:
+                continue
+            if value not in (None, "", "-"):
+                extras[key] = value
+
+        record.extra_fields = (" - " + " - ".join(f"{k}={v}" for k, v in extras.items())) if extras else ""
 
         return super().format(record)
     
