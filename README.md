@@ -114,7 +114,31 @@ The `application/` directory also contains utilities that can be invoked manuall
 
 Refer to the module docstrings for advanced usage.
 
-## 6. Troubleshooting
+## 6. Folder watcher for automatic Milvus sync
+
+The watcher under [`application/modules/watcher.py`](application/modules/watcher.py) observes the `WATCH_DIR` configured in
+`application/config.py` (default: `assets/`). Its responsibilities are deliberately narrow:
+
+- detect file system changes (create/modify/delete/move) for supported extensions in `VALID_EXTS`;
+- call two hook functions, `upsert_file_to_milvus(file_path)` and `delete_file_from_milvus(file_path)`, to keep Milvus in sync.
+
+The hooks now live in [`application/modules/milvus_hooks.py`](application/modules/milvus_hooks.py) so you can swap them out or
+adjust their metadata filter (via `SOURCE_METADATA_KEY`) if your Milvus schema differs from the default defined in
+`ingest/langchain_milvus_ingest.py`. They reuse the existing ingestion pipeline (`ingest_pages_to_milvus` and
+`ingest_text_document`) and log which sources currently exist in the knowledge base after each update, making it easy to
+verify what documents are indexed.
+
+Run the watcher from the `application/` directory:
+
+```bash
+cd application
+python -m modules.watcher
+```
+
+Stop it with `Ctrl+C`. The debounce worker ensures only stable files (unchanged for a couple of seconds) are ingested to avoid
+partial uploads.
+
+## 7. Troubleshooting
 
 | Issue | Suggested action |
 |-------|------------------|
