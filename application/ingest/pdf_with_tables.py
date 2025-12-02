@@ -241,7 +241,7 @@ def get_page_elements(pdf_path):
                     bbox for idx, bbox in enumerate(table_bboxes) if idx not in indices_to_remove
                 ]
                 removed = sorted(indices_to_remove)
-                logger.info(
+                logger.debug(
                     "Reclassifying framed text as narrative text; removing tables",
                     extra={"page": pidx, "tables_removed": removed},
                 )

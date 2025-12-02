@@ -1075,7 +1075,7 @@ def _maybe_use_gemini_for_table(
         gemini_rows = _parse_gemini_table_response(result.get("model_response"))
 
     if gemini_rows:
-        logger.info(
+        logger.debug(
             "Using Gemini image extractor output for complex table",
             extra={"page": page_number},
         )
@@ -1128,7 +1128,7 @@ def change_table_format(
                     definition_table = _looks_like_definition_table(records)
                     has_nested_cells = _table_has_nested_cells(records)
                     if has_nested_cells:
-                        logger.info(
+                        logger.debug(
                             "Nested cells detected post-repair; enabling Gemini fallback",
                             extra={"page": page_idx + 1, "table": i},
                         )
@@ -1154,7 +1154,7 @@ def change_table_format(
                         # JSON output before falling back to the built-in logic.
                         cache_key = (pdf_path, page_idx + 1)
                         if cache_key in gemini_page_cache:
-                            logger.info(
+                            logger.debug(
                                 "Using cached Gemini extraction for page; skipping re-render",
                                 extra={"page": page_idx + 1, "table": i},
                             )
@@ -1172,7 +1172,7 @@ def change_table_format(
                         (looks_like_plain_text or definition_table)
                         and (has_multi_level_header or has_nested_cells)
                     ):
-                        logger.info(
+                        logger.debug(
                             "Skipping Gemini for simple prose-style table; using manual parser",
                             extra={
                                 "page": page_idx + 1,

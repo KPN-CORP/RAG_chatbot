@@ -27,6 +27,9 @@ top_k_retrieval = 7
 
 google_api_key_name = "GEMINI_API_KEY_IRIS"  # environment variable name for Gemini/Google API key
 
+WATCH_DIR = r"/home/hcispanel/kpn-iris/storage/app/private/knowledge-base/"  # change this
+VALID_EXTS = {".pdf", ".docx", ".txt"}  # adapt to your project
+
 def _escape_prompt_braces(prompt: str, *, allow: set[str]) -> str:
     """Escape all braces except those explicitly allowed as template vars."""
 
