@@ -740,8 +740,39 @@ def _has_more_than_double_headers(table_data: list) -> bool:
     if not check_double_header(table_data):
         return False
 
-    third_row = table_data[2]
-    return _count_non_empty_cells(third_row) > 0
+    def _row_is_probably_header(row: Iterable[Any]) -> bool:
+        """Return True when *row* is short enough to plausibly be a header.
+
+        Long, paragraph-style cells (e.g., hundreds of characters or multiple
+        newline breaks) typically indicate body content. Filtering them out
+        prevents framed prose with a small title row from being mis-classified
+        as a deep multi-header table that would wrongly trigger the Gemini
+        fallback.
+        """
+
+        texts = [str(cell).strip() for cell in row or [] if cell not in (None, "")]
+        if not texts:
+            return False
+
+        longest = max(len(t) for t in texts)
+        total = sum(len(t) for t in texts)
+        newline_breaks = sum(t.count("\n") for t in texts)
+
+        if longest > 120 or total > 200:
+            return False
+        if newline_breaks >= 2:
+            return False
+        return True
+
+    headerish_first_three = [_row_is_probably_header(row) for row in table_data[:3]]
+    if not all(headerish_first_three):
+        return False
+
+    # Require multiple non-empty header cells across the top rows so a single
+    # title bar plus a long paragraph row does not masquerade as a multi-level
+    # header.
+    non_empty_top_rows = sum(_count_non_empty_cells(row) for row in table_data[:3])
+    return non_empty_top_rows >= 4
 
 
 def process_double_header_table(table_data):

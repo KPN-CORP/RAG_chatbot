@@ -91,6 +91,10 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
       narrative text so they remain searchable even when `pdfplumber` reports
       them as tiny tables.
 
+    - Paragraph-heavy rows (e.g., long multi-line definition blocks) are not
+      treated as stacked headers, so a short title row above a prose block no
+      longer triggers the complex-table/Gemini path.
+
     - The Gemini extractor now guards against mixed text/JSON responses and
       normalizes rows to the same list-of-dicts shape returned by the manual
       parser so downstream chunking never breaks. Temporary images created via
