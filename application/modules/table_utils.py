@@ -591,6 +591,32 @@ def _table_has_nested_cells(table_data: Iterable[Iterable[Any]]) -> bool:
     return False
 
 
+def _table_shape_summary(table_data: Iterable[Iterable[Any]]) -> Tuple[int, int]:
+    """Return ``(row_count, max_col_count)`` for quick complexity checks."""
+
+    row_count = 0
+    max_cols = 0
+    for row in table_data or []:
+        row_count += 1
+        if isinstance(row, dict):
+            max_cols = max(max_cols, len(row))
+        elif isinstance(row, (list, tuple)):
+            max_cols = max(max_cols, len(row))
+    return row_count, max_cols
+
+
+def _looks_like_plain_text_block(table_data: Iterable[Iterable[Any]]) -> bool:
+    """Heuristic: reject Gemini fallback for tiny one-column text blobs.
+
+    pdfplumber sometimes mis-detects paragraph-shaped regions as single-column
+    tables. Those "tables" should bypass the Gemini image call to avoid wasted
+    API usage on non-tabular content.
+    """
+
+    rows, cols = _table_shape_summary(table_data)
+    return rows <= 3 and cols <= 1
+
+
 def check_double_header(table_data):
     """Detect the presence of two header rows.
 
@@ -973,10 +999,18 @@ def change_table_format(
                         is_triple_header or _has_more_than_double_headers(records)
                     )
 
+                    row_count, col_count = _table_shape_summary(records)
+                    looks_like_plain_text = _looks_like_plain_text_block(records)
+
                     table = clean_table(dct)
                     gemini_rows: Optional[list] = None
 
-                    if use_gemini_for_complex and (has_multi_level_header or has_nested_cells):
+                    if (
+                        use_gemini_for_complex
+                        and not looks_like_plain_text
+                        and (has_multi_level_header or has_nested_cells)
+                        and col_count > 1
+                    ):
                         # Deep multi-level headers or nested tables are prone to
                         # distortion. Try the image-based Gemini extractor for cleaner
                         # JSON output before falling back to the built-in logic.
@@ -986,6 +1020,16 @@ def change_table_format(
                             prompt=gemini_prompt,
                             model_name=resolved_model,
                             api_key=resolved_api_key,
+                        )
+                    elif looks_like_plain_text and (has_multi_level_header or has_nested_cells):
+                        logger.info(
+                            "Skipping Gemini for small single-column block; using manual parser",
+                            extra={
+                                "page": page_idx + 1,
+                                "table": i,
+                                "rows": row_count,
+                                "cols": col_count,
+                            },
                         )
 
                     try:

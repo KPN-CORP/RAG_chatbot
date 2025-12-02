@@ -81,8 +81,9 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
   - Tables with three-header rows **or nested tables inside cells** are treated
     as *complex* and will automatically be re-extracted via the Gemini image
     flow when a Gemini API key is configured. Simpler layouts continue to use
-    the built-in parser. You can still call the helper directly if you want to
-    fine-tune the prompt:
+    the built-in parser. One-column, paragraph-like detections are explicitly
+    left to the manual parser to avoid unnecessary Gemini calls. You can still
+    call the helper directly if you want to fine-tune the prompt:
 
     - The Gemini extractor now guards against mixed text/JSON responses and
       normalizes rows to the same list-of-dicts shape returned by the manual
