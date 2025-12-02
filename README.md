@@ -82,8 +82,10 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
     as *complex* and will automatically be re-extracted via the Gemini image
     flow when a Gemini API key is configured. Simpler layouts continue to use
     the built-in parser. One-column, paragraph-like detections are explicitly
-    left to the manual parser to avoid unnecessary Gemini calls. You can still
-    call the helper directly if you want to fine-tune the prompt:
+    left to the manual parser to avoid unnecessary Gemini calls. Gemini image
+    extraction is memoized per page so multiple complex tables on the same
+    page do not trigger repeated model calls. You can still call the helper
+    directly if you want to fine-tune the prompt:
 
     - The Gemini extractor now guards against mixed text/JSON responses and
       normalizes rows to the same list-of-dicts shape returned by the manual

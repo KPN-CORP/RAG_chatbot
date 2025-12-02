@@ -970,6 +970,12 @@ def change_table_format(
         resolved_api_key = os.environ.get("GEMINI_API_KEY")
     resolved_model = gemini_model or getattr(config, "gemini_chat_model", None)
 
+    # Avoid calling Gemini multiple times for the same page. The image extractor
+    # renders an entire page (not a specific table bbox), so one invocation per
+    # page is sufficient and much cheaper than re-rendering for every table on
+    # that page.
+    gemini_page_cache: dict[tuple[Optional[str], int], Optional[list]] = {}
+
     for page_idx, page in enumerate(pdf_pages):
         if page["tables"]:
             for i, dct in enumerate(page["tables"]):
@@ -1014,13 +1020,22 @@ def change_table_format(
                         # Deep multi-level headers or nested tables are prone to
                         # distortion. Try the image-based Gemini extractor for cleaner
                         # JSON output before falling back to the built-in logic.
-                        gemini_rows = _maybe_use_gemini_for_table(
-                            pdf_path=pdf_path,
-                            page_number=page_idx + 1,
-                            prompt=gemini_prompt,
-                            model_name=resolved_model,
-                            api_key=resolved_api_key,
-                        )
+                        cache_key = (pdf_path, page_idx + 1)
+                        if cache_key in gemini_page_cache:
+                            logger.info(
+                                "Using cached Gemini extraction for page; skipping re-render",
+                                extra={"page": page_idx + 1, "table": i},
+                            )
+                            gemini_rows = gemini_page_cache[cache_key]
+                        else:
+                            gemini_rows = _maybe_use_gemini_for_table(
+                                pdf_path=pdf_path,
+                                page_number=page_idx + 1,
+                                prompt=gemini_prompt,
+                                model_name=resolved_model,
+                                api_key=resolved_api_key,
+                            )
+                            gemini_page_cache[cache_key] = gemini_rows
                     elif looks_like_plain_text and (has_multi_level_header or has_nested_cells):
                         logger.info(
                             "Skipping Gemini for small single-column block; using manual parser",
