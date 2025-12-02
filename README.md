@@ -78,6 +78,40 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
 
    The service extracts tables and text using `ingest/pdf_with_tables.py`, generates Gemini embeddings, and stores chunks in Milvus. Duplicate chunks (same checksum) are skipped automatically.
 
+  - Tables with three-header rows **or nested tables inside cells** are treated
+    as *complex* and will automatically be re-extracted via the Gemini image
+    flow when a Gemini API key is configured. Simpler layouts continue to use
+    the built-in parser. You can still call the helper directly if you want to
+    fine-tune the prompt:
+
+    - The Gemini extractor now guards against mixed text/JSON responses and
+      normalizes rows to the same list-of-dicts shape returned by the manual
+      parser so downstream chunking never breaks.
+
+  If a table contains complex multi-level headers that render poorly, you can
+  render the page to an image and ask Gemini to re-extract the table JSON via
+  [`ingest/table_image_extractor.py`](application/ingest/table_image_extractor.py):
+
+   ```bash
+   python - <<'PY'
+   from application.ingest.table_image_extractor import extract_table_with_gemini
+
+  result = extract_table_with_gemini(
+      pdf_path="/path/to/document.pdf",
+      page_number=6,
+      prompt=(
+          "Return the table as a JSON array of rows with every header column. "
+          "If headers span multiple rows, combine them with ' - ' (e.g., "
+          "'Allowance - Travel - Amount'). If a cell contains a nested table, "
+          "capture that subtable as multi-line text inside the cell value."
+      ),
+      api_key="${GOOGLE_API_KEY}",
+  )
+   # result["rows"] is validated by a Pydantic schema and ready to ingest
+   print(result["rows"])
+   PY
+   ```
+
 3. **Ask a question**
 
    ```bash

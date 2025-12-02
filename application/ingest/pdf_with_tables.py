@@ -238,5 +238,12 @@ def get_page_elements(pdf_path):
 def extract_pdf_content(file):
     pdf_pages = get_page_elements(file)
     pdf_pages = check_and_fix_nested_tables(pdf_pages)
-    pdf_pages = change_table_format(pdf_pages)
+    # When the table detector encounters complex layouts (e.g., triple headers),
+    # try the Gemini image-based extractor before falling back to the legacy
+    # header-normalization logic.
+    pdf_pages = change_table_format(
+        pdf_pages,
+        pdf_path=file,
+        use_gemini_for_complex=True,
+    )
     return pdf_pages
