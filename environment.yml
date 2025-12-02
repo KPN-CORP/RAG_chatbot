@@ -10,7 +10,9 @@ dependencies:
   - jupyterlab
   - nb_conda_kernels==2.3.1
   - tqdm==4.64.0
+  - poppler
   - pip:
+    - pdf2image
     - watchdog
     - accelerate
     - fastapi
