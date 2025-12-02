@@ -184,15 +184,25 @@ adjust their metadata filter (via `SOURCE_METADATA_KEY`) if your Milvus schema d
 `ingest_text_document`) and log which sources currently exist in the knowledge base after each update, making it easy to
 verify what documents are indexed.
 
-Run the watcher from the `application/` directory:
+Run the watcher from the `application/` directory. You can pass `--profile` to
+target a specific chatbot configuration (for example `config_IRIS.py`):
 
 ```bash
 cd application
-python -m modules.watcher
+python -m modules.watcher --profile IRIS
 ```
 
-Stop it with `Ctrl+C`. The debounce worker ensures only stable files (unchanged for a couple of seconds) are ingested to avoid
-partial uploads.
+To keep the watcher running in the background with log output, use `nohup` and
+redirect stdout/stderr to a file:
+
+```bash
+cd application
+nohup python -m modules.watcher --profile IRIS > logs/watcher.log 2>&1 &
+```
+
+Stop it with `Ctrl+C` (or terminate the background PID). The debounce worker
+ensures only stable files (unchanged for a couple of seconds) are ingested to
+avoid partial uploads.
 
 ## 7. Troubleshooting
 
