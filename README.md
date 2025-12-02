@@ -100,6 +100,10 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
       pages frequently look like deep headers but are semantically prose and no
       longer invoke Gemini.
 
+    - Full-page framed definition/procedure boxes (1–2 columns, lots of text)
+      are reclassified as narrative so their content is not lost to the table
+      filter and will not be routed through the complex-table logic.
+
     - The Gemini extractor now guards against mixed text/JSON responses and
       normalizes rows to the same list-of-dicts shape returned by the manual
       parser so downstream chunking never breaks. Temporary images created via

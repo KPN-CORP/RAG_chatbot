@@ -157,6 +157,52 @@ def get_page_elements(pdf_path):
                 # of text are better treated as narrative paragraphs.
                 return width_ratio >= 0.6 and height_ratio >= 0.35
 
+            def _is_full_page_text_table(table_record: dict) -> bool:
+                """Return True when a large framed block is really body text.
+
+                Some pages wrap long paragraphs in a full-width, multi-row box
+                that ``pdfplumber`` flags as a table, which would otherwise
+                strip all text from the narrative stream. When the detection:
+
+                * spans most of the page,
+                * uses only one or two columns, and
+                * contains substantial paragraph text,
+
+                we reclassify it as narrative so the page text is preserved and
+                the downstream parser does not treat the page as a complex table.
+                """
+
+                rows = table_record.get("rows") or []
+                if not rows:
+                    return False
+
+                row_count = len(rows)
+                col_count = max((len(r) if isinstance(r, (list, tuple)) else 0) for r in rows)
+                if col_count == 0 or col_count > 2:
+                    return False
+
+                # Require enough body text to justify reclassifying as narrative.
+                cell_texts = [
+                    str(cell).strip()
+                    for row in rows
+                    for cell in (row or [])
+                    if cell not in (None, "")
+                ]
+                total_chars = sum(len(t) for t in cell_texts)
+                if total_chars < 200:
+                    return False
+
+                bbox = table_record.get("bbox")
+                if not bbox:
+                    return False
+
+                width_ratio = abs(float(bbox[2]) - float(bbox[0])) / max(page_width, 1.0)
+                height_ratio = abs(float(bbox[3]) - float(bbox[1])) / max(page_height, 1.0)
+
+                # Full-page framed definitions/procedure blocks should stay in
+                # the narrative stream instead of being treated as tables.
+                return width_ratio >= 0.6 and height_ratio >= 0.5 and row_count <= 8
+
             def _is_heading_banner(table_record: dict) -> bool:
                 """Return True when the detection is a single-row heading bar.
 
@@ -210,8 +256,15 @@ def get_page_elements(pdf_path):
             heading_table_indices = [
                 idx for idx, table in enumerate(tables) if _is_heading_banner(table)
             ]
+            full_page_text_table_indices = [
+                idx for idx, table in enumerate(tables) if _is_full_page_text_table(table)
+            ]
 
-            indices_to_remove = set(paragraph_table_indices) | set(heading_table_indices)
+            indices_to_remove = (
+                set(paragraph_table_indices)
+                | set(heading_table_indices)
+                | set(full_page_text_table_indices)
+            )
 
             if indices_to_remove:
                 updated = _drop_tables(indices_to_remove)
