@@ -4,19 +4,25 @@ The watcher has a single responsibility: detect file changes under the
 configured ``WATCH_DIR`` and call hook functions that manage the Milvus
 knowledge base. The hook implementations live in ``modules/milvus_hooks.py`` so
 they can be swapped out or extended without touching the watcher logic.
+
+The CLI now supports ``--profile`` to load a chatbot-specific config module
+(e.g. ``config_IRIS.py``) using ``config_loader.load_config``. This keeps the
+watcher in sync with the same collection and paths the chatbot uses.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import threading
 import time
+from types import ModuleType
 from typing import Dict, Iterable
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from config import VALID_EXTS, WATCH_DIR
+from config_loader import load_config
 from logging_config import get_logger
 from modules.milvus_hooks import delete_file_from_milvus, upsert_file_to_milvus
 
@@ -27,6 +33,54 @@ DEBOUNCE_SECONDS = 2.0
 pending_updates: Dict[str, float] = {}  # file_path -> last_event_time
 pending_lock = threading.Lock()
 stop_event = threading.Event()
+
+# Loaded at runtime so ``--profile`` can map to config_{PROFILE}.py.
+CURRENT_CONFIG: ModuleType | None = None
+WATCH_DIR: str = ""
+VALID_EXTS: set[str] = set()
+
+
+def configure_watcher(profile: str = "") -> ModuleType:
+    """Load config for ``profile`` and populate module-level settings.
+
+    If ``profile`` is empty, the default ``config.py`` is used. Otherwise the
+    watcher attempts to import ``config_{profile.upper()}.py`` via
+    ``config_loader.load_config``. The function also primes ``WATCH_DIR`` and
+    ``VALID_EXTS`` so the event handler and debounce worker see consistent
+    values.
+    """
+
+    global CURRENT_CONFIG, WATCH_DIR, VALID_EXTS
+
+    config = load_config(profile)
+    CURRENT_CONFIG = config
+    WATCH_DIR = getattr(config, "WATCH_DIR", "../assets/")
+    VALID_EXTS = set(getattr(config, "VALID_EXTS", {".pdf", ".docx", ".txt"}))
+
+    logger.info(
+        "Watcher configuration loaded",
+        extra={
+            "profile": profile or "default",
+            "watch_dir": WATCH_DIR,
+            "valid_exts": sorted(VALID_EXTS),
+        },
+    )
+    return config
+
+
+def parse_args() -> argparse.Namespace:
+    """Return CLI arguments for the watcher."""
+
+    parser = argparse.ArgumentParser(description="Watch a folder and sync Milvus")
+    parser.add_argument(
+        "--profile",
+        default="",
+        help=(
+            "Chatbot profile name; maps to config_{PROFILE.upper()}.py ("
+            "default config.py when omitted)."
+        ),
+    )
+    return parser.parse_args()
 
 
 def should_index(path: str) -> bool:
@@ -69,26 +123,26 @@ class DocsEventHandler(FileSystemEventHandler):
         if event.is_directory or not should_index(event.src_path):
             return
         logger.info("File deleted", extra={"path": event.src_path})
-        delete_file_from_milvus(event.src_path)
+        delete_file_from_milvus(event.src_path, config=CURRENT_CONFIG)
 
     def on_moved(self, event):
         if event.is_directory:
             return
         if should_index(event.src_path):
             logger.info("File moved (old)", extra={"path": event.src_path})
-            delete_file_from_milvus(event.src_path)
+            delete_file_from_milvus(event.src_path, config=CURRENT_CONFIG)
         if should_index(event.dest_path):
             logger.info("File moved (new)", extra={"path": event.dest_path})
             mark_dirty(event.dest_path)
 
 
 def _process_pending_updates(to_process: Iterable[str]) -> None:
-    """Ingest or upsert a batch of dirty files."""
+    """Ingest or upsert a batch of dirty files using the active config."""
 
     for path in to_process:
         if os.path.exists(path):
             logger.info("Processing file after debounce", extra={"path": path})
-            upsert_file_to_milvus(path)
+            upsert_file_to_milvus(path, config=CURRENT_CONFIG)
         else:
             # File vanished between event and worker
             logger.info("Skipping missing file", extra={"path": path})
@@ -114,9 +168,10 @@ def debounce_worker():
     logger.info("Debounce worker stopping")
 
 
-def run_watcher():
-    """Start the folder watcher and debounce worker."""
+def run_watcher(profile: str = ""):
+    """Start the folder watcher and debounce worker for the given profile."""
 
+    config = configure_watcher(profile)
     os.makedirs(WATCH_DIR, exist_ok=True)
 
     event_handler = DocsEventHandler()
@@ -127,7 +182,10 @@ def run_watcher():
     worker_thread = threading.Thread(target=debounce_worker, daemon=True)
     worker_thread.start()
 
-    logger.info("Watching for changes", extra={"path": WATCH_DIR})
+    logger.info(
+        "Watching for changes",
+        extra={"path": WATCH_DIR, "profile": profile or "default", "collection": config.collection_name},
+    )
     try:
         while True:
             time.sleep(1)
@@ -142,4 +200,5 @@ def run_watcher():
 
 
 if __name__ == "__main__":
-    run_watcher()
+    args = parse_args()
+    run_watcher(profile=args.profile)
