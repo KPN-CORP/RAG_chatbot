@@ -1,11 +1,19 @@
-"""Utility helpers for working with tables extracted from PDFs."""
+"""Utility helpers for working with tables extracted from PDFs.
+
+This module also contains the logic that decides when to fall back to the
+image-based Gemini extractor for particularly complex tables (for example,
+those with three header rows that the default parser struggles to normalize).
+"""
 
 import copy
+import json
+import os
 import re
-from typing import Any, Iterable, List, Tuple
+from typing import Any, Iterable, List, Optional, Tuple
 
 from fuzzywuzzy import fuzz, process
 
+from config_loader import load_config
 from logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -545,57 +553,273 @@ def change_to_records(table):
     return [dict(zip(headers, row)) for row in data_rows]
 
 
-def fix_nested_table(table, tables, tables_flatted):
+def fix_nested_table(
+    table,
+    tables,
+    tables_flatted,
+    *,
+    current_index: Optional[int] = None,
+):
+    """Attempt to repair genuine nested tables while avoiding false positives.
+
+    A previous implementation occasionally replaced long paragraph cells with the
+    table itself (because the fuzzy matcher would pick the current table's flat
+    text), which then caused `_table_has_nested_cells` to flag the page as
+    nested. We now skip self-matches, require a high confidence score, and only
+    embed candidate tables that have multiple rows (a stronger signal of an
+    actual nested grid) so simple headers are not rewritten as nested content.
+    """
+
     for index_row, row in enumerate(table):
         for index_col, cell in enumerate(row):
             if cell and isinstance(cell, str) and len(cell) > 20:
                 one, score = process.extractOne(
                     cell, tables_flatted, scorer=fuzz.token_sort_ratio
                 )
-                if score > 80:
-                    idx = tables_flatted.index(one)
-                    cleaned_table = clean_table_left_focus(tables[idx])
-                    cleaned_table = change_to_records(cleaned_table)
-                    table[index_row][index_col] = cleaned_table
+                if score <= 88:
+                    continue
+
+                idx = tables_flatted.index(one)
+                if current_index is not None and idx == current_index:
+                    # Avoid replacing a cell with the current table itself.
+                    continue
+
+                candidate = tables[idx]
+                if not candidate or len(candidate) < 2:
+                    # Single-row candidates are unlikely to be true nested tables.
+                    continue
+
+                cleaned_table = clean_table_left_focus(candidate)
+                cleaned_table = change_to_records(cleaned_table)
+                table[index_row][index_col] = cleaned_table
+
     return table
 
 
+def _count_non_empty_cells(row: Iterable[Any]) -> int:
+    """Return the number of cells that contain some non-empty content."""
+
+    return sum(1 for cell in row if cell not in (None, ""))
+
+
+def _table_has_nested_cells(table_data: Iterable[Iterable[Any]]) -> bool:
+    """Return True if any cell already contains a nested structure.
+
+    Cells that hold ``list`` or ``dict`` instances are treated as nested tables
+    that should trigger the Gemini fallback, because the built-in normalizer
+    cannot reliably flatten deeply nested content. This check deliberately runs
+    *after* ``check_and_fix_nested_tables`` to catch any residual nested
+    structures the repair pass could not fully unwind.
+    """
+
+    for row in table_data or []:
+        for cell in row or []:
+            if isinstance(cell, (list, dict)):
+                return True
+    return False
+
+
+def _table_shape_summary(table_data: Iterable[Iterable[Any]]) -> Tuple[int, int]:
+    """Return ``(row_count, max_col_count)`` for quick complexity checks."""
+
+    row_count = 0
+    max_cols = 0
+    for row in table_data or []:
+        row_count += 1
+        if isinstance(row, dict):
+            max_cols = max(max_cols, len(row))
+        elif isinstance(row, (list, tuple)):
+            max_cols = max(max_cols, len(row))
+    return row_count, max_cols
+
+
+def _looks_like_plain_text_block(table_data: Iterable[Iterable[Any]]) -> bool:
+    """Heuristic: reject Gemini fallback for paragraph-shaped "tables".
+
+    pdfplumber sometimes mis-detects framed paragraphs as tiny tables. When the
+    structure is shallow (<=3 rows, <=2 columns) and dominated by a single long
+    cell, treat it as plain text so we do not route it through the complex-table
+    or Gemini logic.
+    """
+
+    rows, cols = _table_shape_summary(table_data)
+    if rows <= 3 and cols <= 1:
+        return True
+
+    if rows <= 3 and cols <= 2:
+        non_empty_cells = 0
+        total_chars = 0
+        for row in table_data or []:
+            for cell in row or []:
+                if cell not in (None, ""):
+                    non_empty_cells += 1
+                    total_chars += len(str(cell))
+        # A single dense cell or a couple of long cells suggests prose rather
+        # than a true table structure.
+        if non_empty_cells <= 3 and total_chars >= 120:
+            return True
+
+    return False
+
+
+def _looks_like_definition_table(table_data: Iterable[Iterable[Any]]) -> bool:
+    """Detect simple 1–2 column definition layouts so we skip Gemini.
+
+    Some pages contain a short banner plus long explanatory paragraphs laid out
+    in one or two columns. These are structurally simple and should stay on the
+    manual parsing path even if the top rows superficially resemble stacked
+    headers. The heuristic looks for:
+
+    * At most two columns.
+    * At least one very short column paired with a consistently longer column.
+    * Long-form text (>= 80 chars) in the wider column.
+    """
+
+    rows, cols = _table_shape_summary(table_data)
+    if cols == 0 or cols > 2 or rows == 0:
+        return False
+
+    col_lengths: list[list[int]] = [[] for _ in range(cols)]
+    for row in table_data or []:
+        if not isinstance(row, (list, tuple)):
+            return False
+        for idx in range(cols):
+            val = row[idx] if idx < len(row) else None
+            if val not in (None, ""):
+                col_lengths[idx].append(len(str(val)))
+
+    if not any(col_lengths):
+        return False
+
+    # Require the "long" column to carry meaningful paragraph text.
+    long_col_has_body = any(any(l >= 80 for l in lengths) for lengths in col_lengths)
+    if not long_col_has_body:
+        return False
+
+    # Compare average lengths to ensure we truly have a skinny label column.
+    averages = [
+        (sum(lengths) / len(lengths)) if lengths else 0.0 for lengths in col_lengths
+    ]
+    if len(averages) == 1:
+        # Single-column framed paragraphs should stay as narrative-style tables.
+        return True
+
+    avg_short = min(averages)
+    avg_long = max(averages)
+    return avg_long >= max(120, 2.5 * max(avg_short, 1.0))
+
+
 def check_double_header(table_data):
+    """Detect the presence of two header rows.
+
+    The previous implementation treated any table with a blank first row and a
+    populated second row as a double header. That aggressively promoted body
+    rows to headers and produced mangled structures. We now require that both
+    header rows contain meaningful content and that at least one column in the
+    second row fills a blank in the first row.
+    """
+
     if len(table_data) < 2:
         return False
 
     header_row_1 = table_data[0]
     header_row_2 = table_data[1]
 
-    for i, item in enumerate(header_row_1):
-        if item is None and header_row_2[i] is not None:
-            return True
-
-    if all(isinstance(h, str) for h in header_row_1):
+    non_empty_row_1 = _count_non_empty_cells(header_row_1)
+    non_empty_row_2 = _count_non_empty_cells(header_row_2)
+    if non_empty_row_1 == 0 or non_empty_row_2 == 0:
+        # Do not mark as double-header if one of the header rows is entirely
+        # empty; this usually means the detector misaligned on the first data
+        # row.
         return False
 
-    return False
+    has_fill_down = any(
+        (cell_1 in (None, "")) and (cell_2 not in (None, ""))
+        for cell_1, cell_2 in zip(header_row_1, header_row_2)
+    )
+
+    return bool(has_fill_down)
 
 
 def check_triple_header(table_data):
+    """Detect the presence of three header rows.
+
+    We only consider a triple-header table if we already pass the double-header
+    check and every header row has at least one non-empty cell. This prevents
+    sparse header rows from being misclassified as multi-level headers.
+    """
+
     try:
         if len(table_data) < 3:
+            return False
+
+        if not check_double_header(table_data):
             return False
 
         header_row_2 = table_data[1]
         header_row_3 = table_data[2]
 
-        for i, item in enumerate(header_row_2):
-            __, has_upper = _lookup_borders(table_data, row_idx=1, col_idx=i) # and header_row_2[i] has top border:
-            if item is None and header_row_3[i] is not None and i > 0 and has_upper: 
-                return True
-
-        if all(isinstance(h, str) for h in header_row_2):
+        if _count_non_empty_cells(header_row_3) == 0:
             return False
+
+        for i, item in enumerate(header_row_2):
+            __, has_upper = _lookup_borders(table_data, row_idx=1, col_idx=i)  # header_row_2[i] has top border
+            if item in (None, "") and header_row_3[i] not in (None, "") and i > 0 and has_upper:
+                return True
     except Exception as e:
         logger.debug(f"Error in check_triple_header: {e}")
 
     return False
+
+
+def _has_more_than_double_headers(table_data: list) -> bool:
+    """Detect multi-level headers deeper than two rows.
+
+    Some complex layouts use three or more stacked header rows without fitting
+    the stricter ``check_triple_header`` heuristic. If the first three rows all
+    carry content and the table also looks like a double-header, treat it as a
+    complex multi-header table so Gemini can re-extract cleaner rows.
+    """
+
+    if len(table_data) < 3:
+        return False
+
+    if not check_double_header(table_data):
+        return False
+
+    def _row_is_probably_header(row: Iterable[Any]) -> bool:
+        """Return True when *row* is short enough to plausibly be a header.
+
+        Long, paragraph-style cells (e.g., hundreds of characters or multiple
+        newline breaks) typically indicate body content. Filtering them out
+        prevents framed prose with a small title row from being mis-classified
+        as a deep multi-header table that would wrongly trigger the Gemini
+        fallback.
+        """
+
+        texts = [str(cell).strip() for cell in row or [] if cell not in (None, "")]
+        if not texts:
+            return False
+
+        longest = max(len(t) for t in texts)
+        total = sum(len(t) for t in texts)
+        newline_breaks = sum(t.count("\n") for t in texts)
+
+        if longest > 120 or total > 200:
+            return False
+        if newline_breaks >= 2:
+            return False
+        return True
+
+    headerish_first_three = [_row_is_probably_header(row) for row in table_data[:3]]
+    if not all(headerish_first_three):
+        return False
+
+    # Require multiple non-empty header cells across the top rows so a single
+    # title bar plus a long paragraph row does not masquerade as a multi-level
+    # header.
+    non_empty_top_rows = sum(_count_non_empty_cells(row) for row in table_data[:3])
+    return non_empty_top_rows >= 4
 
 
 def process_double_header_table(table_data):
@@ -607,19 +831,21 @@ def process_double_header_table(table_data):
 
     filled_header_1 = []
     last_header = ""
-    for header in header_row_1:
-        if header is not None:
-            last_header = header
+    for idx, header in enumerate(header_row_1):
+        if header:
+            last_header = str(header).replace("\n", " ")
+        elif not last_header:
+            last_header = f"Column {idx + 1}"
         filled_header_1.append(last_header)
 
     flattened_headers = []
     for i, sub_header in enumerate(header_row_2):
-        main_header = filled_header_1[i]
+        main_header = filled_header_1[i] if i < len(filled_header_1) else f"Column {i + 1}"
         if sub_header:
-            clean_sub_header = sub_header.replace("\n", " ")
+            clean_sub_header = str(sub_header).replace("\n", " ")
             flattened_headers.append(f"{main_header} - {clean_sub_header}")
         else:
-            flattened_headers.append(main_header)
+            flattened_headers.append(main_header or f"Column {i + 1}")
 
     records = []
     data_rows = table_data[2:]
@@ -627,7 +853,10 @@ def process_double_header_table(table_data):
     for row in data_rows:
         if not row or row[0] is None:
             continue
-        record = dict(zip(flattened_headers, row))
+        # Zip after normalizing the row length so trailing empty cells do not
+        # disappear from the record.
+        normalized_row = list(row) + [None] * (len(flattened_headers) - len(row))
+        record = dict(zip(flattened_headers, normalized_row))
         records.append(record)
 
     return records
@@ -643,9 +872,11 @@ def process_triple_header_table(table_data):
 
     filled_header_1 = []
     last_header = ""
-    for header in header_row_1:
-        if header is not None:
-            last_header = header.replace("\n", " ")
+    for idx, header in enumerate(header_row_1):
+        if header:
+            last_header = str(header).replace("\n", " ")
+        elif not last_header:
+            last_header = f"Column {idx + 1}"
         filled_header_1.append(last_header)
 
     filled_header_2 = []
@@ -653,15 +884,18 @@ def process_triple_header_table(table_data):
     for i, header in enumerate(header_row_2):
         if i > 0 and filled_header_1[i] != filled_header_1[i - 1]:
             last_header = ""
-        if header is not None:
-            last_header = header.replace("\n", " ")
+        if header:
+            last_header = str(header).replace("\n", " ")
+        elif not last_header:
+            last_header = f"Column {i + 1}"
         filled_header_2.append(last_header)
 
     flattened_headers = []
     for i in range(len(header_row_1)):
-        h1 = filled_header_1[i]
-        h2 = filled_header_2[i]
-        h3 = header_row_3[i].replace("\n", " ") if header_row_3[i] else ""
+        h1 = filled_header_1[i] if i < len(filled_header_1) else f"Column {i + 1}"
+        h2 = filled_header_2[i] if i < len(filled_header_2) else ""
+        h3_raw = header_row_3[i] if i < len(header_row_3) else ""
+        h3 = str(h3_raw).replace("\n", " ") if h3_raw else ""
         parts = [part for part in [h1, h2, h3] if part]
         unique_parts = list(dict.fromkeys(parts))
         final_header = " - ".join(unique_parts)
@@ -674,21 +908,36 @@ def process_triple_header_table(table_data):
         if not row or row[0] is None:
             continue
 
-        record = dict(zip(flattened_headers, row))
+        normalized_row = list(row) + [None] * (len(flattened_headers) - len(row))
+        record = dict(zip(flattened_headers, normalized_row))
         records.append(record)
 
     return records
 
 
 def check_and_fix_nested_tables(pdf_pages):
+    """Attempt to flatten detected nested tables before header normalization.
+
+    The helper uses fuzzy matching to repair obviously nested grids but may not
+    fully resolve every embedded structure. Downstream consumers therefore keep
+    a secondary guard (``_table_has_nested_cells``) to route any remaining
+    nested content through the Gemini extractor when needed.
+    """
+
     tables, tables_flatted = get_all_tables(pdf_pages)
+    table_counter = 0
     for page_idx, page in enumerate(pdf_pages):
         if page["tables"]:
             for i, dct in enumerate(page["tables"]):
                 fixed_table = dct.get("table_dct")
                 if fixed_table:
                     try:
-                        fixed_table = fix_nested_table(fixed_table, tables, tables_flatted)
+                        fixed_table = fix_nested_table(
+                            fixed_table,
+                            tables,
+                            tables_flatted,
+                            current_index=table_counter,
+                        )
                     except Exception as e:
                         logger.debug(
                             "Error in fix_nested_table for page %s, table %s: %s",
@@ -697,28 +946,265 @@ def check_and_fix_nested_tables(pdf_pages):
                             e,
                         )
                 pdf_pages[page_idx]["tables"][i]["table_dct"] = fixed_table
+                table_counter += 1
     return pdf_pages
 
 
-def change_table_format(pdf_pages):
+def _extract_json_fragment(text: str) -> Optional[Any]:
+    """Pull the first JSON-like fragment out of a string.
+
+    Gemini sometimes prepends or appends natural language around the JSON
+    payload. This helper searches for the first ``[`` or ``{`` and attempts to
+    parse up to the last matching bracket/brace so we can recover the table rows
+    instead of failing hard.
+    """
+
+    openers = [(text.find("["), "]"), (text.find("{"), "}")]
+    starts = [(idx, closer) for idx, closer in openers if idx != -1]
+    if not starts:
+        return None
+
+    start, closer = sorted(starts, key=lambda tup: tup[0])[0]
+    window = text[start:]
+    end = window.rfind(closer)
+    if end == -1:
+        return None
+
+    candidate = window[: end + 1]
+    try:
+        return json.loads(candidate)
+    except Exception:
+        return None
+
+
+def _sanitize_gemini_rows(rows: Iterable[Any]) -> list:
+    """Align Gemini rows with the manual parser's expectations."""
+
+    sanitized = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        clean_row = {}
+        for key, value in row.items():
+            clean_key = str(key) if key is not None else ""
+            clean_row[clean_key] = None if value is None else str(value)
+        if clean_row:
+            sanitized.append(clean_row)
+    return sanitized
+
+
+def _parse_gemini_table_response(model_response: Any) -> Optional[list]:
+    """Attempt to coerce the Gemini response into a list of sanitized rows."""
+
+    if model_response is None:
+        return None
+
+    # If Gemini already returned a Python object, accept it directly.
+    if isinstance(model_response, list):
+        return _sanitize_gemini_rows(model_response)
+    if isinstance(model_response, dict):
+        maybe_rows = model_response.get("rows") or model_response.get("table")
+        if isinstance(maybe_rows, list):
+            return _sanitize_gemini_rows(maybe_rows)
+        return None
+
+    raw_text = getattr(model_response, "text", None) or getattr(
+        model_response, "content", None
+    )
+    if raw_text is None:
+        raw_text = model_response
+    if not isinstance(raw_text, str):
+        return None
+
+    parsed = None
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError:
+        parsed = _extract_json_fragment(raw_text)
+
+    if isinstance(parsed, list):
+        return _sanitize_gemini_rows(parsed)
+    if isinstance(parsed, dict):
+        for key in ("rows", "table"):
+            if isinstance(parsed.get(key), list):
+                return _sanitize_gemini_rows(parsed[key])
+    return None
+
+
+def _maybe_use_gemini_for_table(
+    *,
+    pdf_path: Optional[str],
+    page_number: int,
+    prompt: Optional[str] = None,
+    model_name: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[list]:
+    """Try extracting a complex table via the Gemini image-based helper.
+
+    Any failure returns ``None`` so callers can quietly fall back to the
+    traditional table parsing path without interrupting ingestion.
+    """
+
+    if not pdf_path:
+        return None
+
+    try:
+        from ingest.table_image_extractor import extract_table_with_gemini
+    except Exception as exc:  # pragma: no cover - optional dependency
+        logger.warning("Gemini extractor unavailable", exc_info=exc)
+        return None
+
+    try:
+        result = extract_table_with_gemini(
+            pdf_path=pdf_path,
+            page_number=page_number,
+            prompt=prompt,
+            model_name=model_name,
+            api_key=api_key,
+        )
+    except Exception as exc:  # pragma: no cover - remote call issues
+        logger.warning(
+            "Gemini extraction failed; falling back to default parser",
+            extra={"page": page_number},
+            exc_info=exc,
+        )
+        return None
+
+    gemini_rows = result.get("rows")
+    if not gemini_rows:
+        gemini_rows = _parse_gemini_table_response(result.get("model_response"))
+
+    if gemini_rows:
+        logger.info(
+            "Using Gemini image extractor output for complex table",
+            extra={"page": page_number},
+        )
+    return gemini_rows
+
+def change_table_format(
+    pdf_pages,
+    *,
+    pdf_path: Optional[str] = None,
+    use_gemini_for_complex: bool = False,
+    gemini_prompt: Optional[str] = None,
+    gemini_model: Optional[str] = None,
+    gemini_api_key: Optional[str] = None,
+):
+    """Normalize table rows into records, with optional Gemini fallback."""
+
+    # Resolve Gemini defaults from the active config so we mirror app.py usage.
+    config = load_config()
+    api_key_env = getattr(config, "google_api_key_name", "GEMINI_API_KEY")
+    resolved_api_key = gemini_api_key or os.environ.get(api_key_env)
+    if not resolved_api_key and api_key_env != "GEMINI_API_KEY":
+        resolved_api_key = os.environ.get("GEMINI_API_KEY")
+    resolved_model = gemini_model or getattr(config, "gemini_chat_model", None)
+
+    # Avoid calling Gemini multiple times for the same page. The image extractor
+    # renders an entire page (not a specific table bbox), so one invocation per
+    # page is sufficient and much cheaper than re-rendering for every table on
+    # that page.
+    gemini_page_cache: dict[tuple[Optional[str], int], Optional[list]] = {}
+
     for page_idx, page in enumerate(pdf_pages):
         if page["tables"]:
             for i, dct in enumerate(page["tables"]):
                 records = dct.get("table_dct")
                 if records:
-                    is_double_header = check_double_header(records)
-                    is_triple_header = (
-                        check_triple_header(records) if is_double_header else False
+                    try:
+                        is_double_header = check_double_header(records)
+                        is_triple_header = (
+                            check_triple_header(records) if is_double_header else False
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Header detection failed; treating table as simple",  # noqa: TRY400
+                            extra={"page": page_idx + 1, "table": i},
+                            exc_info=exc,
+                        )
+                        is_double_header = False
+                        is_triple_header = False
+
+                    definition_table = _looks_like_definition_table(records)
+                    has_nested_cells = _table_has_nested_cells(records)
+                    if has_nested_cells:
+                        logger.info(
+                            "Nested cells detected post-repair; enabling Gemini fallback",
+                            extra={"page": page_idx + 1, "table": i},
+                        )
+                    has_multi_level_header = (
+                        is_triple_header or _has_more_than_double_headers(records)
                     )
 
+                    row_count, col_count = _table_shape_summary(records)
+                    looks_like_plain_text = _looks_like_plain_text_block(records)
+
                     table = clean_table(dct)
+                    gemini_rows: Optional[list] = None
+
+                    if (
+                        use_gemini_for_complex
+                        and not looks_like_plain_text
+                        and not definition_table
+                        and (has_multi_level_header or has_nested_cells)
+                        and col_count > 1
+                    ):
+                        # Deep multi-level headers or nested tables are prone to
+                        # distortion. Try the image-based Gemini extractor for cleaner
+                        # JSON output before falling back to the built-in logic.
+                        cache_key = (pdf_path, page_idx + 1)
+                        if cache_key in gemini_page_cache:
+                            logger.info(
+                                "Using cached Gemini extraction for page; skipping re-render",
+                                extra={"page": page_idx + 1, "table": i},
+                            )
+                            gemini_rows = gemini_page_cache[cache_key]
+                        else:
+                            gemini_rows = _maybe_use_gemini_for_table(
+                                pdf_path=pdf_path,
+                                page_number=page_idx + 1,
+                                prompt=gemini_prompt,
+                                model_name=resolved_model,
+                                api_key=resolved_api_key,
+                            )
+                            gemini_page_cache[cache_key] = gemini_rows
+                    elif (
+                        (looks_like_plain_text or definition_table)
+                        and (has_multi_level_header or has_nested_cells)
+                    ):
+                        logger.info(
+                            "Skipping Gemini for simple prose-style table; using manual parser",
+                            extra={
+                                "page": page_idx + 1,
+                                "table": i,
+                                "rows": row_count,
+                                "cols": col_count,
+                            },
+                        )
+
                     try:
-                        if is_triple_header:
+                        if gemini_rows and all(isinstance(r, dict) for r in gemini_rows):
+                            records = gemini_rows
+                        elif is_triple_header:
                             records = process_triple_header_table(table)
                         elif is_double_header:
                             records = process_double_header_table(table)
                         else:
-                            headers = table[0]
+                            headers = [
+                                (str(h).replace("\n", " ") if h else f"Column {idx + 1}")
+                                for idx, h in enumerate(table[0])
+                            ]
+                            data_rows = table[1:]
+                            records = [dict(zip(headers, row)) for row in data_rows]
+
+                        if not records:
+                            # The table likely was misclassified as a multi-header
+                            # structure. Fall back to a single-header interpretation
+                            # to avoid returning malformed nested dictionaries.
+                            headers = [
+                                (str(h).replace("\n", " ") if h else f"Column {idx + 1}")
+                                for idx, h in enumerate(table[0])
+                            ]
                             data_rows = table[1:]
                             records = [dict(zip(headers, row)) for row in data_rows]
                     except Exception as e:

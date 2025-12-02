@@ -116,6 +116,164 @@ def get_page_elements(pdf_path):
                     }
                 )
 
+            def _is_paragraph_like_table(table_record: dict) -> bool:
+                """Return True when a detected table is really a paragraph block.
+
+                Some PDFs are laid out with a single framed text block that
+                ``pdfplumber`` detects as a 1–2 column table. When the block is
+                only a few rows high, spans most of the page, and contains a lot
+                of uninterrupted text, we should treat it as narrative instead
+                of a table so the downstream parser does not route it through
+                the complex-table logic or Gemini.
+                """
+
+                rows = table_record.get("rows") or []
+                if not rows:
+                    return False
+
+                row_count = len(rows)
+                col_count = max((len(r) if isinstance(r, (list, tuple)) else 0) for r in rows)
+                if row_count > 3 or col_count > 2:
+                    return False
+
+                cell_texts = [
+                    str(cell).strip()
+                    for row in rows
+                    for cell in (row or [])
+                    if cell not in (None, "")
+                ]
+                total_chars = sum(len(t) for t in cell_texts)
+                if total_chars < 120:
+                    return False
+
+                bbox = table_record.get("bbox")
+                if not bbox:
+                    return False
+
+                width_ratio = abs(float(bbox[2]) - float(bbox[0])) / max(page_width, 1.0)
+                height_ratio = abs(float(bbox[3]) - float(bbox[1])) / max(page_height, 1.0)
+
+                # Frame-like blocks covering most of the page and carrying a lot
+                # of text are better treated as narrative paragraphs.
+                return width_ratio >= 0.6 and height_ratio >= 0.35
+
+            def _is_full_page_text_table(table_record: dict) -> bool:
+                """Return True when a large framed block is really body text.
+
+                Some pages wrap long paragraphs in a full-width, multi-row box
+                that ``pdfplumber`` flags as a table, which would otherwise
+                strip all text from the narrative stream. When the detection:
+
+                * spans most of the page,
+                * uses only one or two columns, and
+                * contains substantial paragraph text,
+
+                we reclassify it as narrative so the page text is preserved and
+                the downstream parser does not treat the page as a complex table.
+                """
+
+                rows = table_record.get("rows") or []
+                if not rows:
+                    return False
+
+                row_count = len(rows)
+                col_count = max((len(r) if isinstance(r, (list, tuple)) else 0) for r in rows)
+                if col_count == 0 or col_count > 2:
+                    return False
+
+                # Require enough body text to justify reclassifying as narrative.
+                cell_texts = [
+                    str(cell).strip()
+                    for row in rows
+                    for cell in (row or [])
+                    if cell not in (None, "")
+                ]
+                total_chars = sum(len(t) for t in cell_texts)
+                if total_chars < 200:
+                    return False
+
+                bbox = table_record.get("bbox")
+                if not bbox:
+                    return False
+
+                width_ratio = abs(float(bbox[2]) - float(bbox[0])) / max(page_width, 1.0)
+                height_ratio = abs(float(bbox[3]) - float(bbox[1])) / max(page_height, 1.0)
+
+                # Full-page framed definitions/procedure blocks should stay in
+                # the narrative stream instead of being treated as tables.
+                return width_ratio >= 0.6 and height_ratio >= 0.5 and row_count <= 8
+
+            def _is_heading_banner(table_record: dict) -> bool:
+                """Return True when the detection is a single-row heading bar.
+
+                Some documents place page titles or section headers inside a
+                thin framed box that ``pdfplumber`` reports as a tiny table. When
+                the detection has a single row, only one non-empty cell, and a
+                shallow height, treat it as narrative text so the heading is
+                preserved in the text stream instead of being routed through the
+                table pipeline.
+                """
+
+                rows = table_record.get("rows") or []
+                if len(rows) != 1:
+                    return False
+
+                non_empty_cells = [
+                    cell for cell in rows[0] if cell not in (None, "")
+                ]
+                if len(non_empty_cells) != 1:
+                    return False
+
+                bbox = table_record.get("bbox")
+                if not bbox:
+                    return False
+
+                height_ratio = abs(float(bbox[3]) - float(bbox[1])) / max(page_height, 1.0)
+                return height_ratio <= 0.15
+
+            def _drop_tables(indices_to_remove):
+                if not indices_to_remove:
+                    return
+                remaining_tables = [
+                    table for idx, table in enumerate(tables) if idx not in indices_to_remove
+                ]
+                remaining_bboxes = [
+                    bbox for idx, bbox in enumerate(table_bboxes) if idx not in indices_to_remove
+                ]
+                removed = sorted(indices_to_remove)
+                logger.info(
+                    "Reclassifying framed text as narrative text; removing tables",
+                    extra={"page": pidx, "tables_removed": removed},
+                )
+                return remaining_tables, remaining_bboxes
+
+            # Reclassify paragraph-like and heading detections as narrative blocks
+            # so we do not exclude their words from the text stream nor send them
+            # to the complex table parser.
+            paragraph_table_indices = [
+                idx for idx, table in enumerate(tables) if _is_paragraph_like_table(table)
+            ]
+            heading_table_indices = [
+                idx for idx, table in enumerate(tables) if _is_heading_banner(table)
+            ]
+            full_page_text_table_indices = [
+                idx for idx, table in enumerate(tables) if _is_full_page_text_table(table)
+            ]
+
+            indices_to_remove = (
+                set(paragraph_table_indices)
+                | set(heading_table_indices)
+                | set(full_page_text_table_indices)
+            )
+
+            if indices_to_remove:
+                updated = _drop_tables(indices_to_remove)
+                if updated:
+                    tables, table_bboxes = updated
+                    tables = [
+                        {**table, "table_index": new_idx} for new_idx, table in enumerate(tables)
+                    ]
+
             words = page.extract_words(
                 x_tolerance=1.5,
                 y_tolerance=3.0,
@@ -238,5 +396,12 @@ def get_page_elements(pdf_path):
 def extract_pdf_content(file):
     pdf_pages = get_page_elements(file)
     pdf_pages = check_and_fix_nested_tables(pdf_pages)
-    pdf_pages = change_table_format(pdf_pages)
+    # When the table detector encounters complex layouts (e.g., triple headers),
+    # try the Gemini image-based extractor before falling back to the legacy
+    # header-normalization logic.
+    pdf_pages = change_table_format(
+        pdf_pages,
+        pdf_path=file,
+        use_gemini_for_complex=True,
+    )
     return pdf_pages
