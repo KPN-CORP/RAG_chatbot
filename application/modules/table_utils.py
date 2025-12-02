@@ -553,18 +553,46 @@ def change_to_records(table):
     return [dict(zip(headers, row)) for row in data_rows]
 
 
-def fix_nested_table(table, tables, tables_flatted):
+def fix_nested_table(
+    table,
+    tables,
+    tables_flatted,
+    *,
+    current_index: Optional[int] = None,
+):
+    """Attempt to repair genuine nested tables while avoiding false positives.
+
+    A previous implementation occasionally replaced long paragraph cells with the
+    table itself (because the fuzzy matcher would pick the current table's flat
+    text), which then caused `_table_has_nested_cells` to flag the page as
+    nested. We now skip self-matches, require a high confidence score, and only
+    embed candidate tables that have multiple rows (a stronger signal of an
+    actual nested grid) so simple headers are not rewritten as nested content.
+    """
+
     for index_row, row in enumerate(table):
         for index_col, cell in enumerate(row):
             if cell and isinstance(cell, str) and len(cell) > 20:
                 one, score = process.extractOne(
                     cell, tables_flatted, scorer=fuzz.token_sort_ratio
                 )
-                if score > 80:
-                    idx = tables_flatted.index(one)
-                    cleaned_table = clean_table_left_focus(tables[idx])
-                    cleaned_table = change_to_records(cleaned_table)
-                    table[index_row][index_col] = cleaned_table
+                if score <= 88:
+                    continue
+
+                idx = tables_flatted.index(one)
+                if current_index is not None and idx == current_index:
+                    # Avoid replacing a cell with the current table itself.
+                    continue
+
+                candidate = tables[idx]
+                if not candidate or len(candidate) < 2:
+                    # Single-row candidates are unlikely to be true nested tables.
+                    continue
+
+                cleaned_table = clean_table_left_focus(candidate)
+                cleaned_table = change_to_records(cleaned_table)
+                table[index_row][index_col] = cleaned_table
+
     return table
 
 
@@ -819,13 +847,19 @@ def check_and_fix_nested_tables(pdf_pages):
     """
 
     tables, tables_flatted = get_all_tables(pdf_pages)
+    table_counter = 0
     for page_idx, page in enumerate(pdf_pages):
         if page["tables"]:
             for i, dct in enumerate(page["tables"]):
                 fixed_table = dct.get("table_dct")
                 if fixed_table:
                     try:
-                        fixed_table = fix_nested_table(fixed_table, tables, tables_flatted)
+                        fixed_table = fix_nested_table(
+                            fixed_table,
+                            tables,
+                            tables_flatted,
+                            current_index=table_counter,
+                        )
                     except Exception as e:
                         logger.debug(
                             "Error in fix_nested_table for page %s, table %s: %s",
@@ -834,6 +868,7 @@ def check_and_fix_nested_tables(pdf_pages):
                             e,
                         )
                 pdf_pages[page_idx]["tables"][i]["table_dct"] = fixed_table
+                table_counter += 1
     return pdf_pages
 
 

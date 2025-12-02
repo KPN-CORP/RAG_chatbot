@@ -87,9 +87,14 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
     page do not trigger repeated model calls. You can still call the helper
     directly if you want to fine-tune the prompt:
 
+    - Single-row heading banners that only contain a title are reclassified as
+      narrative text so they remain searchable even when `pdfplumber` reports
+      them as tiny tables.
+
     - The Gemini extractor now guards against mixed text/JSON responses and
       normalizes rows to the same list-of-dicts shape returned by the manual
-      parser so downstream chunking never breaks.
+      parser so downstream chunking never breaks. Temporary images created via
+      `pdf2image` are cleaned up immediately after parsing.
 
   If a table contains complex multi-level headers that render poorly, you can
   render the page to an image and ask Gemini to re-extract the table JSON via

@@ -148,111 +148,120 @@ def extract_table_with_gemini(
     image_path = _page_to_image(pdf_file, page_number, dpi=dpi)
     prompt_text = prompt or DEFAULT_EXTRACTION_PROMPT
 
-    with open(image_path, "rb") as img_file:
-        encoded_image = base64.b64encode(img_file.read()).decode("utf-8")
-
-    config = load_config()
-    parser = PydanticOutputParser(pydantic_object=ExtractedTable)
-
-    system_instructions = (
-        "You are a precise data extraction assistant. Return only JSON that "
-        "matches the provided schema. Keep column headers exactly as they "
-        "appear and preserve line breaks inside cell values."
-    )
-
-    prompt_template = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                f"{system_instructions}\n\nSchema instructions:\n{{format_instructions}}",
-            ),
-            (
-                "human",
-                [
-                    {"type": "text", "text": "{user_prompt}"},
-                    {
-                        "type": "image_url",
-                        "image_url": "data:image/png;base64,{image_b64}",
-                    },
-                ],
-            ),
-        ]
-    )
-
-    chat_model = ChatGoogleGenerativeAI(
-        model=model_name or getattr(config, "gemini_chat_model", None),
-        google_api_key=api_key
-        or os.environ.get(getattr(config, "google_api_key_name", "GEMINI_API_KEY")),
-        temperature=0,
-    )
-
-    chain = prompt_template.partial(
-        format_instructions=parser.get_format_instructions()
-    ) | chat_model | parser
-
     try:
-        parsed: ExtractedTable = chain.invoke(
-            {"user_prompt": prompt_text, "image_b64": encoded_image}
+        with open(image_path, "rb") as img_file:
+            encoded_image = base64.b64encode(img_file.read()).decode("utf-8")
+
+        config = load_config()
+        parser = PydanticOutputParser(pydantic_object=ExtractedTable)
+
+        system_instructions = (
+            "You are a precise data extraction assistant. Return only JSON that "
+            "matches the provided schema. Keep column headers exactly as they "
+            "appear and preserve line breaks inside cell values."
         )
-        rows = _sanitize_rows(parsed.rows)
+
+        prompt_template = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    f"{system_instructions}\n\nSchema instructions:\n{{format_instructions}}",
+                ),
+                (
+                    "human",
+                    [
+                        {"type": "text", "text": "{user_prompt}"},
+                        {
+                            "type": "image_url",
+                            "image_url": "data:image/png;base64,{image_b64}",
+                        },
+                    ],
+                ),
+            ]
+        )
+
+        chat_model = ChatGoogleGenerativeAI(
+            model=model_name or getattr(config, "gemini_chat_model", None),
+            google_api_key=api_key
+            or os.environ.get(getattr(config, "google_api_key_name", "GEMINI_API_KEY")),
+            temperature=0,
+        )
+
+        chain = prompt_template.partial(
+            format_instructions=parser.get_format_instructions()
+        ) | chat_model | parser
+
+        try:
+            parsed: ExtractedTable = chain.invoke(
+                {"user_prompt": prompt_text, "image_b64": encoded_image}
+            )
+            rows = _sanitize_rows(parsed.rows)
+            return {
+                "page": page_number,
+                "image_path": str(image_path),
+                "rows": rows,
+                "model_response": parsed,
+            }
+        except Exception as exc:  # pragma: no cover - network/model variability
+            logger.warning(
+                "Gemini chain parsing failed; attempting raw response recovery",
+                extra={"page": page_number},
+                exc_info=exc,
+            )
+
+        # Fallback: request the model output directly and try to coerce JSON even if
+        # extra text surrounds it. This prevents ingestion from breaking when the
+        # model returns prose plus JSON.
+        messages = prompt_template.format_messages(
+            format_instructions=parser.get_format_instructions(),
+            user_prompt=prompt_text,
+            image_b64=encoded_image,
+        )
+        raw_response = chat_model.invoke(messages)
+        raw_text = getattr(raw_response, "content", None) or getattr(
+            raw_response, "text", None
+        )
+        if raw_text is None:
+            raw_text = str(raw_response)
+
+        fallback_rows: List[Dict[str, Any]] = []
+
+        if isinstance(raw_text, str):
+            stripped = raw_text.strip()
+            parsed_payload: Any = None
+            if stripped.startswith(("[", "{")):
+                try:
+                    parsed_payload = ExtractedTable.model_validate_json(
+                        raw_text, strict=False
+                    ).rows
+                except Exception:
+                    parsed_payload = None
+            if parsed_payload is None:
+                parsed_payload = _extract_json_fragment(stripped)
+            if parsed_payload is None:
+                try:
+                    parsed_payload = json.loads(stripped)
+                except Exception:
+                    parsed_payload = None
+
+            if isinstance(parsed_payload, list):
+                fallback_rows = _sanitize_rows(parsed_payload)
+            elif isinstance(parsed_payload, dict):
+                maybe_rows = parsed_payload.get("rows") or parsed_payload.get("table")
+                if isinstance(maybe_rows, list):
+                    fallback_rows = _sanitize_rows(maybe_rows)
+
         return {
             "page": page_number,
             "image_path": str(image_path),
-            "rows": rows,
-            "model_response": parsed,
+            "rows": _sanitize_rows(fallback_rows or []),
+            "model_response": raw_response,
         }
-    except Exception as exc:  # pragma: no cover - network/model variability
-        logger.warning(
-            "Gemini chain parsing failed; attempting raw response recovery",
-            extra={"page": page_number},
-            exc_info=exc,
-        )
-
-    # Fallback: request the model output directly and try to coerce JSON even if
-    # extra text surrounds it. This prevents ingestion from breaking when the
-    # model returns prose plus JSON.
-    messages = prompt_template.format_messages(
-        format_instructions=parser.get_format_instructions(),
-        user_prompt=prompt_text,
-        image_b64=encoded_image,
-    )
-    raw_response = chat_model.invoke(messages)
-    raw_text = getattr(raw_response, "content", None) or getattr(
-        raw_response, "text", None
-    )
-    if raw_text is None:
-        raw_text = str(raw_response)
-
-    fallback_rows: List[Dict[str, Any]] = []
-
-    if isinstance(raw_text, str):
-        stripped = raw_text.strip()
-        parsed_payload: Any = None
-        if stripped.startswith(("[", "{")):
-            try:
-                parsed_payload = ExtractedTable.model_validate_json(
-                    raw_text, strict=False
-                ).rows
-            except Exception:
-                parsed_payload = None
-        if parsed_payload is None:
-            parsed_payload = _extract_json_fragment(stripped)
-        if parsed_payload is None:
-            try:
-                parsed_payload = json.loads(stripped)
-            except Exception:
-                parsed_payload = None
-
-        if isinstance(parsed_payload, list):
-            fallback_rows = _sanitize_rows(parsed_payload)
-        elif isinstance(parsed_payload, dict):
-            maybe_rows = parsed_payload.get("rows") or parsed_payload.get("table")
-            if isinstance(maybe_rows, list):
-                fallback_rows = _sanitize_rows(maybe_rows)
-
-    return {
-        "page": page_number,
-        "image_path": str(image_path),
-        "rows": _sanitize_rows(fallback_rows or []),
-        "model_response": raw_response,
-    }
+    finally:
+        try:
+            Path(image_path).unlink(missing_ok=True)
+            logger.debug("Deleted temporary image %s", image_path)
+        except Exception as cleanup_exc:  # pragma: no cover - best-effort cleanup
+            logger.debug(
+                "Unable to delete temporary image %s", image_path, exc_info=cleanup_exc
+            )

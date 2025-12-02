@@ -157,27 +157,69 @@ def get_page_elements(pdf_path):
                 # of text are better treated as narrative paragraphs.
                 return width_ratio >= 0.6 and height_ratio >= 0.35
 
-            # Reclassify paragraph-like detections as narrative blocks so we do
-            # not exclude their words from the text stream nor send them to the
-            # complex table parser.
+            def _is_heading_banner(table_record: dict) -> bool:
+                """Return True when the detection is a single-row heading bar.
+
+                Some documents place page titles or section headers inside a
+                thin framed box that ``pdfplumber`` reports as a tiny table. When
+                the detection has a single row, only one non-empty cell, and a
+                shallow height, treat it as narrative text so the heading is
+                preserved in the text stream instead of being routed through the
+                table pipeline.
+                """
+
+                rows = table_record.get("rows") or []
+                if len(rows) != 1:
+                    return False
+
+                non_empty_cells = [
+                    cell for cell in rows[0] if cell not in (None, "")
+                ]
+                if len(non_empty_cells) != 1:
+                    return False
+
+                bbox = table_record.get("bbox")
+                if not bbox:
+                    return False
+
+                height_ratio = abs(float(bbox[3]) - float(bbox[1])) / max(page_height, 1.0)
+                return height_ratio <= 0.15
+
+            def _drop_tables(indices_to_remove):
+                if not indices_to_remove:
+                    return
+                remaining_tables = [
+                    table for idx, table in enumerate(tables) if idx not in indices_to_remove
+                ]
+                remaining_bboxes = [
+                    bbox for idx, bbox in enumerate(table_bboxes) if idx not in indices_to_remove
+                ]
+                removed = sorted(indices_to_remove)
+                logger.info(
+                    "Reclassifying framed text as narrative text; removing tables",
+                    extra={"page": pidx, "tables_removed": removed},
+                )
+                return remaining_tables, remaining_bboxes
+
+            # Reclassify paragraph-like and heading detections as narrative blocks
+            # so we do not exclude their words from the text stream nor send them
+            # to the complex table parser.
             paragraph_table_indices = [
                 idx for idx, table in enumerate(tables) if _is_paragraph_like_table(table)
             ]
-            if paragraph_table_indices:
-                logger.info(
-                    "Reclassifying paragraph-shaped table as narrative text",
-                    extra={"page": pidx, "tables_removed": paragraph_table_indices},
-                )
-                remaining_tables = [
-                    table for idx, table in enumerate(tables) if idx not in paragraph_table_indices
-                ]
-                tables = [
-                    {**table, "table_index": new_idx}
-                    for new_idx, table in enumerate(remaining_tables)
-                ]
-                table_bboxes = [
-                    bbox for idx, bbox in enumerate(table_bboxes) if idx not in paragraph_table_indices
-                ]
+            heading_table_indices = [
+                idx for idx, table in enumerate(tables) if _is_heading_banner(table)
+            ]
+
+            indices_to_remove = set(paragraph_table_indices) | set(heading_table_indices)
+
+            if indices_to_remove:
+                updated = _drop_tables(indices_to_remove)
+                if updated:
+                    tables, table_bboxes = updated
+                    tables = [
+                        {**table, "table_index": new_idx} for new_idx, table in enumerate(tables)
+                    ]
 
             words = page.extract_words(
                 x_tolerance=1.5,
