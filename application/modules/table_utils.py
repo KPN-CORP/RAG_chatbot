@@ -662,6 +662,53 @@ def _looks_like_plain_text_block(table_data: Iterable[Iterable[Any]]) -> bool:
     return False
 
 
+def _looks_like_definition_table(table_data: Iterable[Iterable[Any]]) -> bool:
+    """Detect simple 1–2 column definition layouts so we skip Gemini.
+
+    Some pages contain a short banner plus long explanatory paragraphs laid out
+    in one or two columns. These are structurally simple and should stay on the
+    manual parsing path even if the top rows superficially resemble stacked
+    headers. The heuristic looks for:
+
+    * At most two columns.
+    * At least one very short column paired with a consistently longer column.
+    * Long-form text (>= 80 chars) in the wider column.
+    """
+
+    rows, cols = _table_shape_summary(table_data)
+    if cols == 0 or cols > 2 or rows == 0:
+        return False
+
+    col_lengths: list[list[int]] = [[] for _ in range(cols)]
+    for row in table_data or []:
+        if not isinstance(row, (list, tuple)):
+            return False
+        for idx in range(cols):
+            val = row[idx] if idx < len(row) else None
+            if val not in (None, ""):
+                col_lengths[idx].append(len(str(val)))
+
+    if not any(col_lengths):
+        return False
+
+    # Require the "long" column to carry meaningful paragraph text.
+    long_col_has_body = any(any(l >= 80 for l in lengths) for lengths in col_lengths)
+    if not long_col_has_body:
+        return False
+
+    # Compare average lengths to ensure we truly have a skinny label column.
+    averages = [
+        (sum(lengths) / len(lengths)) if lengths else 0.0 for lengths in col_lengths
+    ]
+    if len(averages) == 1:
+        # Single-column framed paragraphs should stay as narrative-style tables.
+        return True
+
+    avg_short = min(averages)
+    avg_long = max(averages)
+    return avg_long >= max(120, 2.5 * max(avg_short, 1.0))
+
+
 def check_double_header(table_data):
     """Detect the presence of two header rows.
 
@@ -1078,6 +1125,7 @@ def change_table_format(
                         is_double_header = False
                         is_triple_header = False
 
+                    definition_table = _looks_like_definition_table(records)
                     has_nested_cells = _table_has_nested_cells(records)
                     if has_nested_cells:
                         logger.info(
@@ -1097,6 +1145,7 @@ def change_table_format(
                     if (
                         use_gemini_for_complex
                         and not looks_like_plain_text
+                        and not definition_table
                         and (has_multi_level_header or has_nested_cells)
                         and col_count > 1
                     ):
@@ -1119,9 +1168,12 @@ def change_table_format(
                                 api_key=resolved_api_key,
                             )
                             gemini_page_cache[cache_key] = gemini_rows
-                    elif looks_like_plain_text and (has_multi_level_header or has_nested_cells):
+                    elif (
+                        (looks_like_plain_text or definition_table)
+                        and (has_multi_level_header or has_nested_cells)
+                    ):
                         logger.info(
-                            "Skipping Gemini for small single-column block; using manual parser",
+                            "Skipping Gemini for simple prose-style table; using manual parser",
                             extra={
                                 "page": page_idx + 1,
                                 "table": i,

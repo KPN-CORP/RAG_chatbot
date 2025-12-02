@@ -95,6 +95,11 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
       treated as stacked headers, so a short title row above a prose block no
       longer triggers the complex-table/Gemini path.
 
+    - Two-column definition/procedure layouts with one skinny label column and
+      long-form descriptions in the other stay on the manual parser path. These
+      pages frequently look like deep headers but are semantically prose and no
+      longer invoke Gemini.
+
     - The Gemini extractor now guards against mixed text/JSON responses and
       normalizes rows to the same list-of-dicts shape returned by the manual
       parser so downstream chunking never breaks. Temporary images created via
