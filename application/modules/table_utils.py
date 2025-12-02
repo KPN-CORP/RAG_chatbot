@@ -606,15 +606,32 @@ def _table_shape_summary(table_data: Iterable[Iterable[Any]]) -> Tuple[int, int]
 
 
 def _looks_like_plain_text_block(table_data: Iterable[Iterable[Any]]) -> bool:
-    """Heuristic: reject Gemini fallback for tiny one-column text blobs.
+    """Heuristic: reject Gemini fallback for paragraph-shaped "tables".
 
-    pdfplumber sometimes mis-detects paragraph-shaped regions as single-column
-    tables. Those "tables" should bypass the Gemini image call to avoid wasted
-    API usage on non-tabular content.
+    pdfplumber sometimes mis-detects framed paragraphs as tiny tables. When the
+    structure is shallow (<=3 rows, <=2 columns) and dominated by a single long
+    cell, treat it as plain text so we do not route it through the complex-table
+    or Gemini logic.
     """
 
     rows, cols = _table_shape_summary(table_data)
-    return rows <= 3 and cols <= 1
+    if rows <= 3 and cols <= 1:
+        return True
+
+    if rows <= 3 and cols <= 2:
+        non_empty_cells = 0
+        total_chars = 0
+        for row in table_data or []:
+            for cell in row or []:
+                if cell not in (None, ""):
+                    non_empty_cells += 1
+                    total_chars += len(str(cell))
+        # A single dense cell or a couple of long cells suggests prose rather
+        # than a true table structure.
+        if non_empty_cells <= 3 and total_chars >= 120:
+            return True
+
+    return False
 
 
 def check_double_header(table_data):
