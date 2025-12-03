@@ -1,4 +1,9 @@
-"""PDF extraction helpers that rely on table utilities."""
+"""PDF extraction helpers that rely on table utilities.
+
+This module identifies tables on a PDF page, keeps narrative text, and delegates
+table normalization to :func:`modules.table_utils.change_table_format`, which
+now always invokes the Gemini page extractor whenever a table exists on a page.
+"""
 
 import pdfplumber
 
@@ -396,9 +401,10 @@ def get_page_elements(pdf_path):
 def extract_pdf_content(file):
     pdf_pages = get_page_elements(file)
     pdf_pages = check_and_fix_nested_tables(pdf_pages)
-    # When the table detector encounters complex layouts (e.g., triple headers),
-    # try the Gemini image-based extractor before falling back to the legacy
-    # header-normalization logic.
+    # Gemini now runs for any page that contains at least one table so the
+    # extractor can directly produce atomic cell + narrative chunks. The
+    # ``use_gemini_for_complex`` flag is retained for compatibility, but the
+    # change_table_format helper always handles the Gemini invocation.
     pdf_pages = change_table_format(
         pdf_pages,
         pdf_path=file,
