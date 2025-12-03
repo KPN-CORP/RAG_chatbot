@@ -204,25 +204,24 @@ def get_page_elements(pdf_path):
                 return width_ratio >= 0.6 and height_ratio >= 0.5 and row_count <= 8
 
             def _is_heading_banner(table_record: dict) -> bool:
-                """Return True when the detection is a single-row heading bar.
+                """Return True when the detection is a single- or two-line heading bar.
 
                 Some documents place page titles or section headers inside a
                 thin framed box that ``pdfplumber`` reports as a tiny table. When
-                the detection has a single row, only one non-empty cell, and a
-                shallow height, treat it as narrative text so the heading is
+                the detection has one *or two* shallow rows, each with only one
+                non-empty cell, treat it as narrative text so the heading is
                 preserved in the text stream instead of being routed through the
                 table pipeline.
                 """
 
                 rows = table_record.get("rows") or []
-                if len(rows) != 1:
+                if not rows or len(rows) > 2:
                     return False
 
-                non_empty_cells = [
-                    cell for cell in rows[0] if cell not in (None, "")
-                ]
-                if len(non_empty_cells) != 1:
-                    return False
+                for row in rows:
+                    non_empty_cells = [cell for cell in row if cell not in (None, "")]
+                    if len(non_empty_cells) != 1:
+                        return False
 
                 bbox = table_record.get("bbox")
                 if not bbox:
