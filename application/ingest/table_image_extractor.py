@@ -4,13 +4,20 @@ This module provides a single entry point, :func:`extract_table_with_gemini`,
 that can be used when the regular PDF table detector produces messy structures
 (e.g., highly nested or multi-span headers). It converts a single PDF page to a
 PNG image via ``pdf2image`` and sends that image to Gemini with a clear
-extraction prompt so the model can return structured JSON for the table.
+extraction prompt so the model can return structured JSON for the table **and**
+ready-made atomic chunks (one cell per chunk, plus narrative).
 
 Unlike the initial prototype, this version leverages LangChain's
 ``ChatGoogleGenerativeAI`` together with ``PydanticOutputParser`` so the Gemini
 response is validated against a schema before returning it to callers. This
 keeps the ingest pipeline consistent with the rest of the app (see
 ``application/app.py`` and ``schemas/rag_outputs.py``).
+
+New behavior: the Gemini call is no longer treated as a "last resort" for only
+the most complex layouts. When a page contains a table, the entire page image
+is rendered and sent to Gemini so every grid — regardless of header depth — is
+normalized into header-aware, cell-level chunks. The previous conditional
+fallback is preserved below as documentation for reference.
 """
 
 from __future__ import annotations
@@ -31,22 +38,55 @@ from schemas.table_extraction import ExtractedTable
 
 logger = get_logger(__name__)
 
-EXAMPLE_OUTPUT_FORMAT = """[
-  {"Header 1": "row 1 value", "Header 2 - Sub A": "row 1 nested detail", "Notes": "line 1\\nline 2"},
-  {"Header 1": "row 2 value", "Header 2 - Sub A": "row 2 nested detail", "Notes": null}
-]"""
+EXAMPLE_OUTPUT_FORMAT = """{
+  "tables": [
+    {
+      "table_index": 0,
+      "title": "Optional caption on the page",
+      "rows": [
+        {
+          "Row": "Row 1 label",
+          "Header 1": "row 1 value",
+          "Header 2 - Sub A": "row 1 nested detail",
+          "Notes": "line 1\\nline 2"
+        },
+        {
+          "Row": "Row 2 label",
+          "Header 1": "row 2 value",
+          "Header 2 - Sub A": "row 2 nested detail",
+          "Notes": null
+        }
+      ]
+    }
+  ],
+  "chunks": [
+    {
+      "chunk_type": "table_cell",
+      "table_index": 0,
+      "row_index": 0,
+      "row_header": "Row 1 label",
+      "column_header": "Header 1",
+      "text": "row 1 value",
+      "notes": "line 1\\nline 2"
+    },
+    {"chunk_type": "narrative", "text": "Narrative paragraph outside any table."}
+  ]
+}"""
 
 
 DEFAULT_EXTRACTION_PROMPT = (
-    "You are a data extraction assistant. Read the provided table image and "
-    "return a JSON array of row objects. Each row must include every column "
-    "from the table header. Preserve text line breaks inside cell values. If "
-    "the header spans multiple levels (double header, triple header, or more), "
-    "concatenate the levels in a single key using ' - ' between levels. If a "
-    "cell contains a nested table or sub-grid, capture its contents as text "
-    "(preserving rows with line breaks) within that cell's value. Use the "
-    "following example output format (list of dictionaries) and do not add "
-    "any text before or after the JSON array:\n"
+    "You are a data extraction assistant. Read the provided full page image and "
+    "return JSON that matches the schema instructions exactly. Identify *all* "
+    "tables on the page (not just complex ones) and keep multi-level headers "
+    "concatenated with ' - ' in the same key. For each table, return its rows "
+    "under `tables` with the correct `table_index` order (top-to-bottom, left-to-"
+    "right on the page). Also segment the entire page into atomic chunks: every "
+    "table cell is one `table_cell` chunk with its `table_index`, `row_index`, "
+    "`column_header`, row identifier, and any notes/comments; all non-table text "
+    "becomes `narrative` chunks. Preserve line breaks inside cell text and notes. "
+    "If a cell embeds another grid, flatten it into the cell text with line "
+    "breaks. Follow this example shape and do not add any text before or after "
+    "the JSON object:\n"
     f"{EXAMPLE_OUTPUT_FORMAT}"
 )
 
@@ -80,6 +120,76 @@ def _sanitize_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if clean_row:
             sanitized.append(clean_row)
     return sanitized
+
+
+def _sanitize_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalize Gemini chunks into serializable dictionaries."""
+
+    cleaned: List[Dict[str, Any]] = []
+    for chunk in chunks or []:
+        if not isinstance(chunk, dict):
+            continue
+        normalized: Dict[str, Any] = {}
+        for key in (
+            "chunk_type",
+            "text",
+            "table_index",
+            "row_index",
+            "column_header",
+            "row_header",
+            "notes",
+            "title",
+        ):
+            if key in chunk:
+                value = chunk[key]
+                if isinstance(value, (dict, list)):
+                    normalized[key] = json.dumps(value, ensure_ascii=False)
+                else:
+                    normalized[key] = value
+        if normalized.get("text"):
+            cleaned.append(normalized)
+    return cleaned
+
+
+def _rows_to_cell_chunks(
+    rows: List[Dict[str, Any]],
+    *,
+    doc_id: Optional[str],
+    source: Optional[str],
+    page_number: int,
+    table_index: int = 0,
+    table_title: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Convert Gemini rows into the atomic cell-chunk format used by ingest.
+
+    The chunking layer expects one chunk per cell with the headers preserved in the
+    text payload. By reusing :func:`table_cells_to_chunks` here, the Gemini output
+    can feed directly into Milvus/embedding without re-parsing later.
+    """
+
+    if not doc_id or not source:
+        return []
+
+    # Local import avoids a top-level dependency for callers that only need rows.
+    from application.ingest.chunking import table_cells_to_chunks
+
+    return table_cells_to_chunks(
+        table_dict_rows=rows,
+        doc_id=doc_id,
+        source=source,
+        page=page_number,
+        table_index=table_index,
+        table_title=table_title,
+    )
+
+
+"""
+Legacy manual chunking logic retained for documentation:
+    The helper above converts Gemini row dictionaries into the ingest pipeline's
+    cell-level chunk format. With the new Gemini prompt producing ready-made
+    chunks, callers should prefer the ``chunks`` returned by the model, but this
+    fallback remains for clarity and in case model outputs omit chunk metadata.
+"""
 
 
 def _extract_json_fragment(text: str) -> Optional[Any]:
@@ -132,13 +242,20 @@ def extract_table_with_gemini(
     model_name: Optional[str] = None,
     api_key: Optional[str] = None,
     dpi: int = 300,
+    return_cell_chunks: bool = True,
+    doc_id: Optional[str] = None,
+    source: Optional[str] = None,
+    table_index: int = 0,
+    table_title: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Extract a complex table by rendering the PDF page and delegating to Gemini.
 
     The Gemini call is executed through LangChain with a :class:`PydanticOutputParser`
     so the returned structure is guaranteed to match the ``ExtractedTable``
     schema (a list of row dictionaries). This mirrors the pattern used in
-    :mod:`application.app` for chat responses.
+    :mod:`application.app` for chat responses. When ``return_cell_chunks`` is
+    ``True`` and ``doc_id``/``source`` are provided, the rows are immediately
+    converted into the atomic cell-chunk format to simplify downstream ingest.
     """
 
     pdf_file = Path(pdf_path)
@@ -196,11 +313,25 @@ def extract_table_with_gemini(
                 {"user_prompt": prompt_text, "image_b64": encoded_image}
             )
             rows = _sanitize_rows(parsed.rows)
+            chunks = _sanitize_chunks([c.model_dump() for c in parsed.chunks])
+            if return_cell_chunks and not chunks:
+                # Preserve legacy behavior if the model did not supply chunks.
+                chunks = _rows_to_cell_chunks(
+                    rows,
+                    doc_id=doc_id,
+                    source=source,
+                    page_number=page_number,
+                    table_index=table_index,
+                    table_title=table_title,
+                )
             return {
                 "page": page_number,
                 "image_path": str(image_path),
                 "rows": rows,
+                "tables": [tbl.model_dump() for tbl in parsed.tables],
+                "chunks": chunks,
                 "model_response": parsed,
+                "cell_chunks": chunks if return_cell_chunks else [],
             }
         except Exception as exc:  # pragma: no cover - network/model variability
             logger.warning(
@@ -225,15 +356,18 @@ def extract_table_with_gemini(
             raw_text = str(raw_response)
 
         fallback_rows: List[Dict[str, Any]] = []
+        fallback_chunks: List[Dict[str, Any]] = []
+        fallback_tables: List[Dict[str, Any]] = []
 
         if isinstance(raw_text, str):
             stripped = raw_text.strip()
             parsed_payload: Any = None
             if stripped.startswith(("[", "{")):
                 try:
-                    parsed_payload = ExtractedTable.model_validate_json(
+                    parsed_model = ExtractedTable.model_validate_json(
                         raw_text, strict=False
-                    ).rows
+                    )
+                    parsed_payload = parsed_model.model_dump()
                 except Exception:
                     parsed_payload = None
             if parsed_payload is None:
@@ -248,14 +382,37 @@ def extract_table_with_gemini(
                 fallback_rows = _sanitize_rows(parsed_payload)
             elif isinstance(parsed_payload, dict):
                 maybe_rows = parsed_payload.get("rows") or parsed_payload.get("table")
+                maybe_tables = parsed_payload.get("tables")
+                maybe_chunks = parsed_payload.get("chunks")
                 if isinstance(maybe_rows, list):
                     fallback_rows = _sanitize_rows(maybe_rows)
+                if isinstance(maybe_tables, list):
+                    fallback_tables = [tbl for tbl in maybe_tables if isinstance(tbl, dict)]
+                if isinstance(maybe_chunks, list):
+                    fallback_chunks = _sanitize_chunks(maybe_chunks)
 
+        final_rows = _sanitize_rows(fallback_rows or [])
+        final_tables = fallback_tables
+        final_chunks = fallback_chunks or (
+            _rows_to_cell_chunks(
+                final_rows,
+                doc_id=doc_id,
+                source=source,
+                page_number=page_number,
+                table_index=table_index,
+                table_title=table_title,
+            )
+            if return_cell_chunks
+            else []
+        )
         return {
             "page": page_number,
             "image_path": str(image_path),
-            "rows": _sanitize_rows(fallback_rows or []),
+            "rows": final_rows,
+            "tables": final_tables,
+            "chunks": final_chunks,
             "model_response": raw_response,
+            "cell_chunks": final_chunks if return_cell_chunks else [],
         }
     finally:
         try:
