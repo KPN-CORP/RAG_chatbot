@@ -274,6 +274,34 @@ def get_page_elements(pdf_path):
                         {**table, "table_index": new_idx} for new_idx, table in enumerate(tables)
                     ]
 
+            heading_row_overrides = []
+            for table in tables:
+                rows = table.get("rows") or []
+                if len(rows) <= 1:
+                    continue
+
+                first_row = rows[0] or []
+                non_empty_cells = [cell for cell in first_row if cell not in (None, "")]
+                if len(non_empty_cells) != 1:
+                    continue
+
+                grid = table.get("grid") or {}
+                cells = grid.get("cells") or []
+                first_row_cells = [c for c in cells if c.get("row") == 0 and c.get("bbox")]
+                if not first_row_cells:
+                    continue
+
+                x0 = min(float(c["bbox"][0]) for c in first_row_cells)
+                y0 = min(float(c["bbox"][1]) for c in first_row_cells)
+                x1 = max(float(c["bbox"][2]) for c in first_row_cells)
+                y1 = max(float(c["bbox"][3]) for c in first_row_cells)
+
+                height_ratio = abs(y1 - y0) / max(page_height, 1.0)
+                if height_ratio > 0.12:
+                    continue
+
+                heading_row_overrides.append({"bbox": (x0, y0, x1, y1)})
+
             words = page.extract_words(
                 x_tolerance=1.5,
                 y_tolerance=3.0,
@@ -284,7 +312,12 @@ def get_page_elements(pdf_path):
             narrative_words = []
             for w in words:
                 wbox = (float(w["x0"]), float(w["top"]), float(w["x1"]), float(w["bottom"]))
-                if not any(bbox_intersects(wbox, tb["bbox"]) for tb in table_bboxes):
+                in_table_bbox = any(bbox_intersects(wbox, tb["bbox"]) for tb in table_bboxes)
+                in_heading_override = any(
+                    bbox_intersects(wbox, hb["bbox"]) for hb in heading_row_overrides
+                )
+
+                if (not in_table_bbox) or in_heading_override:
                     narrative_words.append(w)
 
             # 3) Group words into lines (geometry aware)

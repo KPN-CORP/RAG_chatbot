@@ -1,5 +1,7 @@
 """Embedding model helpers used by the RAG pipeline."""
 
+from __future__ import annotations
+
 import os
 from typing import Optional
 from langchain_huggingface import HuggingFaceEmbeddings
