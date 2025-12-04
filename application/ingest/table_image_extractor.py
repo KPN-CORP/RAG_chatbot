@@ -103,20 +103,51 @@ DEFAULT_EXTRACTION_PROMPT = textwrap.dedent(
        - Do not rewrite in your own words; keep the meaning faithful to the original.
        - If OCR is uncertain, write your best guess, but never add information that is not there.
 
-    OUTPUT CONTRACT (CRITICAL)
+    CHUNK TEXT FORMAT
 
-    - Follow the JSON schema in the format instructions exactly. Never return a bare list of strings.
-    - "rows" is a list of row dictionaries keyed by the column header text. Preserve header wording and line breaks.
-    - "tables" groups rows by table_index and optional table title when multiple tables exist on the page.
-    - "chunks" is a list of atomic pieces of information. Use chunk_type="table_cell" for grid cells, "table_note" for shared footnotes, and "narrative" for text outside tables. When possible fill chunk_text with the fully enriched chunk string (title chain + headers + notes).
-    - Keep the page notes, title chain, and any detected notes inside the chunk payload when relevant.
-    - If a value is missing or unreadable, leave it null/empty rather than fabricating data.
+    For each chunk, output a single string that combines (if present):
+    - The title chain.
+    - A short semantic context (for example a section name, row label, or condition).
+    - The actual rule or information.
+    - Any relevant notes.
+
+    Use a consistent pattern:
+
+    "<Title chain> | <Semantic context> | <Information> | Notes: <note text or '-'>"
+
+    Examples of semantic context:
+    - "Lembur di Hari Kerja, ≥2-5 jam, Gol.2-4"
+    - "Pengajuan lembur"
+    - "Durasi lembur"
+    - "Perhitungan realisasi jam kerja lembur"
+
+    OUTPUT FORMAT
+
+    Your final output must be ONLY a JSON array of strings.
+    Each string is one chunk text as described above.
+    Do not include any objects, keys, metadata, comments, or explanations.
+    Do not add any text before or after the JSON.
+
+    Example output shape (structure only):
+
+    [
+      "KOMPENSASI KELEBIHAN JAM KERJA DI HEAD OFFICE - LAMPIRAN | Lembur di Hari Kerja, ≥2-5 jam, Gol.2-4 | Gol.2: Sesuai UU; Gol.3: 96.000; Gol.4: 126.000 | Notes: -",
+      "KOMPENSASI KELEBIHAN JAM KERJA DI HEAD OFFICE - LAMPIRAN | Durasi lembur | Durasi < 30 menit tidak dihitung sebagai jam kerja lembur | Notes: -"
+    ]
 
     BEFORE OUTPUT
 
-    - Validate that the JSON you return matches the schema.
-    - Ensure rows/chunks reflect the page content faithfully and include necessary titles/notes for retrieval.
-    - Do not include any explanation, comments, code fences, or extra text before or after the JSON object.
+    Before returning the JSON array, check each candidate chunk:
+    - Does it contain real information (not just structure)?
+    - Can it stand alone and still make sense?
+    - Does it include the title chain and any relevant notes?
+    - Is it faithful to the original page?
+
+    If the answer is yes, include it. If not, adjust or discard the chunk.
+
+    The JSON array you output must be freshly generated from the current page.
+    Do not copy any example chunks from this prompt.
+    Do not include any explanation, comments, code fences, or extra text before or after the JSON array.
     """
 )
 
@@ -184,28 +215,6 @@ def _sanitize_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             # atomic chunks.
             cleaned.append(normalized)
     return cleaned
-
-
-def _strings_to_chunks(strings: List[Any]) -> List[Dict[str, Any]]:
-    """Convert plain string outputs into narrative-style chunk dictionaries."""
-
-    normalized_chunks: List[Dict[str, Any]] = []
-    for item in strings or []:
-        if not isinstance(item, str):
-            continue
-        cleaned = item.strip()
-        if not cleaned:
-            continue
-        normalized_chunks.append(
-            {
-                "chunk_type": "narrative",
-                "text": cleaned,
-                "chunk_text": cleaned,
-                "table_index": None,
-                "row_index": None,
-            }
-        )
-    return normalized_chunks
 
 
 def _rows_to_cell_chunks(
@@ -452,33 +461,18 @@ def extract_table_with_gemini(
                 except Exception:
                     parsed_payload = None
 
-        if isinstance(parsed_payload, list):
-            dict_items = [item for item in parsed_payload if isinstance(item, dict)]
-            str_items = [item for item in parsed_payload if isinstance(item, str)]
-            if dict_items:
-                fallback_rows = _sanitize_rows(dict_items)
-            if str_items:
-                fallback_chunks.extend(_strings_to_chunks(str_items))
-        elif isinstance(parsed_payload, dict):
-            maybe_rows = parsed_payload.get("rows") or parsed_payload.get("table")
-            maybe_tables = parsed_payload.get("tables")
-            maybe_chunks = parsed_payload.get("chunks")
-            if isinstance(maybe_rows, list):
-                dict_items = [item for item in maybe_rows if isinstance(item, dict)]
-                str_items = [item for item in maybe_rows if isinstance(item, str)]
-                if dict_items:
-                    fallback_rows = _sanitize_rows(dict_items)
-                if str_items:
-                    fallback_chunks.extend(_strings_to_chunks(str_items))
-            if isinstance(maybe_tables, list):
-                fallback_tables = [tbl for tbl in maybe_tables if isinstance(tbl, dict)]
-            if isinstance(maybe_chunks, list):
-                chunk_dicts = [itm for itm in maybe_chunks if isinstance(itm, dict)]
-                chunk_strings = [itm for itm in maybe_chunks if isinstance(itm, str)]
-                if chunk_dicts:
-                    fallback_chunks.extend(_sanitize_chunks(chunk_dicts))
-                if chunk_strings:
-                    fallback_chunks.extend(_strings_to_chunks(chunk_strings))
+            if isinstance(parsed_payload, list):
+                fallback_rows = _sanitize_rows(parsed_payload)
+            elif isinstance(parsed_payload, dict):
+                maybe_rows = parsed_payload.get("rows") or parsed_payload.get("table")
+                maybe_tables = parsed_payload.get("tables")
+                maybe_chunks = parsed_payload.get("chunks")
+                if isinstance(maybe_rows, list):
+                    fallback_rows = _sanitize_rows(maybe_rows)
+                if isinstance(maybe_tables, list):
+                    fallback_tables = [tbl for tbl in maybe_tables if isinstance(tbl, dict)]
+                if isinstance(maybe_chunks, list):
+                    fallback_chunks = _sanitize_chunks(maybe_chunks)
 
         final_rows = _sanitize_rows(fallback_rows or [])
         final_tables = fallback_tables
