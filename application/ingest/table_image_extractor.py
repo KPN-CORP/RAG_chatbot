@@ -157,6 +157,9 @@ def _sanitize_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     cleaned: List[Dict[str, Any]] = []
     for chunk in chunks or []:
+        if isinstance(chunk, str):
+            cleaned.extend(_strings_to_chunks([chunk]))
+            continue
         if not isinstance(chunk, dict):
             continue
         normalized: Dict[str, Any] = {}
