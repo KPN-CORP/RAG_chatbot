@@ -108,6 +108,8 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
     normalizes rows to the same list-of-dicts shape returned by the manual
     parser while also returning prebuilt cell/narrative chunks. Temporary
     images created via `pdf2image` are cleaned up immediately after parsing.
+    Structured logs now include the PDF name and page so you can trace which
+    document a Gemini request belongs to while debugging ingest runs.
 
     - Blank table cells are coerced to empty strings instead of `null` so the
       Pydantic schema accepts every cell chunk without validation failures.

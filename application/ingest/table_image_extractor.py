@@ -38,6 +38,12 @@ from schemas.table_extraction import ExtractedTable
 
 logger = get_logger(__name__)
 
+
+def _log_context(**kwargs: Any) -> Dict[str, Any]:
+    """Return a compact logging context without ``None`` values for tidy logs."""
+
+    return {key: value for key, value in kwargs.items() if value is not None}
+
 EXAMPLE_OUTPUT_FORMAT = """{
   "tables": [
     {
@@ -233,7 +239,10 @@ def _page_to_image(pdf_path: Path, page_number: int, dpi: int = 300) -> Path:
     image_path = pdf_path.with_suffix("")
     image_path = image_path.with_name(f"{image_path.name}_page{page_number}.png")
     images[0].save(image_path, format="PNG")
-    logger.debug("Rendered %s page %s to %s", pdf_path.name, page_number, image_path)
+    logger.debug(
+        "Rendered page image",
+        extra=_log_context(pdf=pdf_path.name, page=page_number, image=str(image_path)),
+    )
     return image_path
 
 
@@ -267,6 +276,16 @@ def extract_table_with_gemini(
 
     image_path = _page_to_image(pdf_file, page_number, dpi=dpi)
     prompt_text = prompt or DEFAULT_EXTRACTION_PROMPT
+
+    log_meta = _log_context(
+        pdf=pdf_file.name,
+        page=page_number,
+        doc_id=doc_id,
+        source=source,
+        table_index=table_index,
+    )
+
+    logger.info("Gemini page extraction starting", extra=log_meta)
 
     try:
         with open(image_path, "rb") as img_file:
@@ -327,6 +346,10 @@ def extract_table_with_gemini(
                     table_index=table_index,
                     table_title=table_title,
                 )
+            logger.info(
+                "Gemini page extraction completed",
+                extra={**log_meta, "rows": len(rows), "chunks": len(chunks)},
+            )
             return {
                 "page": page_number,
                 "image_path": str(image_path),
@@ -339,7 +362,7 @@ def extract_table_with_gemini(
         except Exception as exc:  # pragma: no cover - network/model variability
             logger.warning(
                 "Gemini chain parsing failed; attempting raw response recovery",
-                extra={"page": page_number},
+                extra=log_meta,
                 exc_info=exc,
             )
 
@@ -408,6 +431,10 @@ def extract_table_with_gemini(
             if return_cell_chunks
             else []
         )
+        logger.info(
+            "Gemini fallback extraction completed",
+            extra={**log_meta, "rows": len(final_rows), "chunks": len(final_chunks)},
+        )
         return {
             "page": page_number,
             "image_path": str(image_path),
@@ -420,8 +447,15 @@ def extract_table_with_gemini(
     finally:
         try:
             Path(image_path).unlink(missing_ok=True)
-            logger.debug("Deleted temporary image %s", image_path)
+            logger.debug(
+                "Deleted temporary image",
+                extra=_log_context(pdf=pdf_file.name, page=page_number, image=str(image_path)),
+            )
         except Exception as cleanup_exc:  # pragma: no cover - best-effort cleanup
             logger.debug(
-                "Unable to delete temporary image %s", image_path, exc_info=cleanup_exc
+                "Unable to delete temporary image",
+                extra=_log_context(
+                    pdf=pdf_file.name, page=page_number, image=str(image_path)
+                ),
+                exc_info=cleanup_exc,
             )

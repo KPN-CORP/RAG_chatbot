@@ -6,6 +6,7 @@ now always invokes the Gemini page extractor whenever a table exists on a page.
 """
 
 import pdfplumber
+from pathlib import Path
 
 from typing import List, Dict, Any
 
@@ -87,6 +88,8 @@ def _merge_floating_trailing_numbers(grouped_words: List[List[Dict[str, Any]]]) 
 
 
 def get_page_elements(pdf_path):
+    pdf_name = Path(pdf_path).name
+    logger.info("Scanning PDF for tables and narrative", extra={"pdf": pdf_name})
     pages_output = []
     with pdfplumber.open(pdf_path) as pdf:
         for pidx, page in enumerate(pdf.pages, start=1):
@@ -248,7 +251,7 @@ def get_page_elements(pdf_path):
                 removed = sorted(indices_to_remove)
                 logger.debug(
                     "Reclassifying framed text as narrative text; removing tables",
-                    extra={"page": pidx, "tables_removed": removed},
+                    extra={"pdf": pdf_name, "page": pidx, "tables_removed": removed},
                 )
                 return remaining_tables, remaining_bboxes
 

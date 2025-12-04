@@ -9,6 +9,7 @@ import copy
 import json
 import os
 import re
+from pathlib import Path
 from typing import Any, Iterable, List, Optional, Tuple
 
 from fuzzywuzzy import fuzz, process
@@ -17,6 +18,13 @@ from config_loader import load_config
 from logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+def _log_context(*, pdf_path: Optional[str], page: Optional[int] = None, table: Optional[int] = None) -> dict:
+    """Return a compact logging context for tidy, document-aware messages."""
+
+    pdf_name = Path(pdf_path).name if pdf_path else None
+    return {k: v for k, v in {"pdf": pdf_name, "page": page, "table": table}.items() if v is not None}
 
 
 # --- geometry helpers -----------------------------------------------------
@@ -1052,7 +1060,11 @@ def _maybe_use_gemini_for_table(
     try:
         from ingest.table_image_extractor import extract_table_with_gemini
     except Exception as exc:  # pragma: no cover - optional dependency
-        logger.warning("Gemini extractor unavailable", exc_info=exc)
+        logger.warning(
+            "Gemini extractor unavailable",
+            extra=_log_context(pdf_path=pdf_path, page=page_number),
+            exc_info=exc,
+        )
         return None
 
     try:
@@ -1066,15 +1078,15 @@ def _maybe_use_gemini_for_table(
     except Exception as exc:  # pragma: no cover - remote call issues
         logger.warning(
             "Gemini extraction failed; falling back to default parser",
-            extra={"page": page_number},
+            extra=_log_context(pdf_path=pdf_path, page=page_number),
             exc_info=exc,
         )
         return None
 
     if result.get("rows") or result.get("chunks"):
-        logger.debug(
-            "Using Gemini image extractor output for table page",
-            extra={"page": page_number},
+        logger.info(
+            "Using Gemini image extractor output",
+            extra=_log_context(pdf_path=pdf_path, page=page_number),
         )
     return result
 
@@ -1109,6 +1121,10 @@ def change_table_format(
 
     for page_idx, page in enumerate(pdf_pages):
         if page["tables"]:
+            logger.info(
+                "Normalizing page tables",
+                extra=_log_context(pdf_path=pdf_path, page=page_idx + 1),
+            )
             cache_key = (pdf_path, page_idx + 1)
             if cache_key in gemini_page_cache:
                 gemini_result = gemini_page_cache[cache_key]
@@ -1138,7 +1154,9 @@ def change_table_format(
                     except Exception as exc:
                         logger.warning(
                             "Header detection failed; treating table as simple",  # noqa: TRY400
-                            extra={"page": page_idx + 1, "table": i},
+                            extra=_log_context(
+                                pdf_path=pdf_path, page=page_idx + 1, table=i
+                            ),
                             exc_info=exc,
                         )
                         is_double_header = False
@@ -1149,7 +1167,9 @@ def change_table_format(
                     if has_nested_cells:
                         logger.debug(
                             "Nested cells detected post-repair; enabling Gemini fallback",
-                            extra={"page": page_idx + 1, "table": i},
+                            extra=_log_context(
+                                pdf_path=pdf_path, page=page_idx + 1, table=i
+                            ),
                         )
                     has_multi_level_header = (
                         is_triple_header or _has_more_than_double_headers(records)
