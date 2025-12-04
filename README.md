@@ -79,10 +79,9 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
    The service extracts tables and text using `ingest/pdf_with_tables.py`, generates Gemini embeddings, and stores chunks in Milvus. Duplicate chunks (same checksum) are skipped automatically.
 
   - Any page that contains a table now triggers the Gemini image extractor so
-    the entire page is parsed into header-aware, cell-level chunks **and**
-    narrative chunks. Gemini is asked to produce the atomic "cell as a chunk"
-    output directly (with `table_index`, headers, row identifiers, and notes),
-    so no manual chunking step is needed. Extracted pages are memoized so
+    the entire page is parsed into atomic chunk strings **and** narrative
+    chunks. Gemini is asked to output a simple JSON array of chunk strings so
+    no manual chunking step is needed. Extracted pages are memoized so
     multiple tables on the same page do not trigger repeated model calls. You
     can still call the helper directly if you want to fine-tune the prompt:
 
@@ -105,11 +104,11 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
       Gemini first.
 
   - The Gemini extractor now guards against mixed text/JSON responses and
-    normalizes rows to the same list-of-dicts shape returned by the manual
-    parser while also returning prebuilt cell/narrative chunks. Temporary
-    images created via `pdf2image` are cleaned up immediately after parsing.
-    Structured logs now include the PDF name and page so you can trace which
-    document a Gemini request belongs to while debugging ingest runs.
+    normalizes string-only outputs so ingest can proceed even when the model
+    omits table metadata. Temporary images created via `pdf2image` are cleaned
+    up immediately after parsing. Structured logs now include the PDF name and
+    page so you can trace which document a Gemini request belongs to while
+    debugging ingest runs.
 
     - Blank table cells are coerced to empty strings instead of `null` so the
       Pydantic schema accepts every cell chunk without validation failures.
@@ -122,10 +121,10 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
     formats consistent between Gemini-produced chunks and those built from the
     manual pipeline.
 
-  - Gemini now returns ready-made `chunks` alongside normalized table rows. The
-    ingest layer accepts these directly when present so you can feed Gemini
-    output into Milvus without re-chunking. Each chunk already contains enriched
-    `chunk_text` with title chains and relevant notes for downstream RAG usage.
+  - Gemini now returns ready-made chunk strings. The ingest layer accepts these
+    directly when present so you can feed Gemini output into Milvus without
+    re-chunking. Each chunk is wrapped with the document/page metadata during
+    ingest to preserve provenance for downstream RAG usage.
 
   If a table contains complex multi-level headers that render poorly, you can
   render the page to an image and ask Gemini to re-extract the table JSON via

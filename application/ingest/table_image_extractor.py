@@ -35,7 +35,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 from config_loader import load_config
 from logging_config import get_logger
-from schemas.table_extraction import ExtractedTable
+from schemas.table_extraction import ExtractedTable, GeminiChunkList
 
 logger = get_logger(__name__)
 
@@ -217,6 +217,27 @@ def _sanitize_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return cleaned
 
 
+def _sanitize_chunk_strings(chunks: List[Any]) -> List[str]:
+    """Ensure Gemini chunk outputs are plain, non-empty strings."""
+
+    sanitized: List[str] = []
+    for chunk in chunks or []:
+        text = chunk if isinstance(chunk, str) else str(chunk)
+        text = text.strip()
+        if text:
+            sanitized.append(text)
+    return sanitized
+
+
+def _chunk_strings_to_dicts(chunk_strings: List[str]) -> List[Dict[str, Any]]:
+    """Represent bare Gemini chunk strings as minimal chunk dictionaries."""
+
+    return [
+        {"chunk_text": text, "chunk_type": "narrative", "text": text}
+        for text in chunk_strings
+    ]
+
+
 def _rows_to_cell_chunks(
     rows: List[Dict[str, Any]],
     *,
@@ -320,11 +341,10 @@ def extract_table_with_gemini(
     """Extract a complex table by rendering the PDF page and delegating to Gemini.
 
     The Gemini call is executed through LangChain with a :class:`PydanticOutputParser`
-    so the returned structure is guaranteed to match the ``ExtractedTable``
-    schema (a list of row dictionaries). This mirrors the pattern used in
-    :mod:`application.app` for chat responses. When ``return_cell_chunks`` is
-    ``True`` and ``doc_id``/``source`` are provided, the rows are immediately
-    converted into the atomic cell-chunk format to simplify downstream ingest.
+    so the returned structure is guaranteed to match the simplified chunk list
+    schema (now just a list of strings). When ``return_cell_chunks`` is
+    ``True`` and ``doc_id``/``source`` are provided, the chunk strings are
+    converted into the atomic chunk format to simplify downstream ingest.
     """
 
     pdf_file = Path(pdf_path)
@@ -349,7 +369,7 @@ def extract_table_with_gemini(
             encoded_image = base64.b64encode(img_file.read()).decode("utf-8")
 
         config = load_config()
-        parser = PydanticOutputParser(pydantic_object=ExtractedTable)
+        chunk_parser = PydanticOutputParser(pydantic_object=GeminiChunkList)
 
         system_instructions = (
             "You are a precise data extraction assistant. Return only JSON that "
@@ -384,35 +404,28 @@ def extract_table_with_gemini(
         )
 
         chain = prompt_template.partial(
-            format_instructions=parser.get_format_instructions()
-        ) | chat_model | parser
+            format_instructions=chunk_parser.get_format_instructions()
+        ) | chat_model | chunk_parser
 
         try:
-            parsed: ExtractedTable = chain.invoke(
+            parsed: GeminiChunkList = chain.invoke(
                 {"user_prompt": prompt_text, "image_b64": encoded_image}
             )
-            rows = _sanitize_rows(parsed.rows)
-            chunks = _sanitize_chunks([c.model_dump() for c in parsed.chunks])
-            if return_cell_chunks and not chunks:
-                # Preserve legacy behavior if the model did not supply chunks.
-                chunks = _rows_to_cell_chunks(
-                    rows,
-                    doc_id=doc_id,
-                    source=source,
-                    page_number=page_number,
-                    table_index=table_index,
-                    table_title=table_title,
-                )
+            # Gemini now responds with a list of chunk strings; wrap them so the
+            # ingest pipeline keeps a consistent payload shape.
+            chunk_strings = _sanitize_chunk_strings(parsed.chunks)
+            chunks = _chunk_strings_to_dicts(chunk_strings)
             logger.info(
                 "Gemini page extraction completed",
-                extra={**log_meta, "rows": len(rows), "chunks": len(chunks)},
+                extra={**log_meta, "rows": 0, "chunks": len(chunks)},
             )
             return {
                 "page": page_number,
                 "image_path": str(image_path),
-                "rows": rows,
-                "tables": [tbl.model_dump() for tbl in parsed.tables],
+                "rows": [],
+                "tables": [],
                 "chunks": chunks,
+                "chunk_strings": chunk_strings,
                 "model_response": parsed,
                 "cell_chunks": chunks if return_cell_chunks else [],
             }
@@ -427,7 +440,7 @@ def extract_table_with_gemini(
         # extra text surrounds it. This prevents ingestion from breaking when the
         # model returns prose plus JSON.
         messages = prompt_template.format_messages(
-            format_instructions=parser.get_format_instructions(),
+            format_instructions=chunk_parser.get_format_instructions(),
             user_prompt=prompt_text,
             image_b64=encoded_image,
         )
@@ -441,18 +454,27 @@ def extract_table_with_gemini(
         fallback_rows: List[Dict[str, Any]] = []
         fallback_chunks: List[Dict[str, Any]] = []
         fallback_tables: List[Dict[str, Any]] = []
+        fallback_chunk_strings: List[str] = []
 
         if isinstance(raw_text, str):
             stripped = raw_text.strip()
             parsed_payload: Any = None
             if stripped.startswith(("[", "{")):
                 try:
-                    parsed_model = ExtractedTable.model_validate_json(
+                    parsed_model = GeminiChunkList.model_validate_json(
                         raw_text, strict=False
                     )
-                    parsed_payload = parsed_model.model_dump()
+                    parsed_payload = parsed_model.chunks
                 except Exception:
                     parsed_payload = None
+                if parsed_payload is None:
+                    try:
+                        table_model = ExtractedTable.model_validate_json(
+                            raw_text, strict=False
+                        )
+                        parsed_payload = table_model.model_dump()
+                    except Exception:
+                        parsed_payload = None
             if parsed_payload is None:
                 parsed_payload = _extract_json_fragment(stripped)
             if parsed_payload is None:
@@ -462,7 +484,9 @@ def extract_table_with_gemini(
                     parsed_payload = None
 
             if isinstance(parsed_payload, list):
-                fallback_rows = _sanitize_rows(parsed_payload)
+                fallback_chunk_strings = _sanitize_chunk_strings(parsed_payload)
+                if not fallback_chunk_strings:
+                    fallback_rows = _sanitize_rows(parsed_payload)
             elif isinstance(parsed_payload, dict):
                 maybe_rows = parsed_payload.get("rows") or parsed_payload.get("table")
                 maybe_tables = parsed_payload.get("tables")
@@ -472,7 +496,12 @@ def extract_table_with_gemini(
                 if isinstance(maybe_tables, list):
                     fallback_tables = [tbl for tbl in maybe_tables if isinstance(tbl, dict)]
                 if isinstance(maybe_chunks, list):
-                    fallback_chunks = _sanitize_chunks(maybe_chunks)
+                    fallback_chunk_strings = _sanitize_chunk_strings(maybe_chunks)
+                    if not fallback_chunk_strings:
+                        fallback_chunks = _sanitize_chunks(maybe_chunks)
+
+        if fallback_chunk_strings:
+            fallback_chunks = _chunk_strings_to_dicts(fallback_chunk_strings)
 
         final_rows = _sanitize_rows(fallback_rows or [])
         final_tables = fallback_tables
@@ -488,6 +517,12 @@ def extract_table_with_gemini(
             if return_cell_chunks
             else []
         )
+        final_chunk_strings = fallback_chunk_strings or [
+            chunk.get("chunk_text", "")
+            for chunk in final_chunks
+            if isinstance(chunk, dict)
+        ]
+
         logger.info(
             "Gemini fallback extraction completed",
             extra={**log_meta, "rows": len(final_rows), "chunks": len(final_chunks)},
@@ -498,6 +533,7 @@ def extract_table_with_gemini(
             "rows": final_rows,
             "tables": final_tables,
             "chunks": final_chunks,
+            "chunk_strings": final_chunk_strings,
             "model_response": raw_response,
             "cell_chunks": final_chunks if return_cell_chunks else [],
         }
