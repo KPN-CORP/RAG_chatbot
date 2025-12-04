@@ -27,7 +27,9 @@ class ExtractedChunk(BaseModel):
             " plain text outside tables."
         )
     )
-    text: str = Field(..., description="Raw text for the chunk, preserving line breaks.")
+    text: str = Field(
+        ..., description="Raw text for the chunk, preserving line breaks."
+    )
     table_index: Optional[int] = Field(
         default=None,
         description="0-based order of the table on the page when chunk_type is table-related.",
@@ -47,6 +49,15 @@ class ExtractedChunk(BaseModel):
         default=None,
         description="Inline notes/comments associated with the cell, if present.",
     )
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def coerce_text(cls, value: Optional[str]) -> str:
+        """Ensure the text field is always a string to satisfy downstream parsing."""
+
+        if value is None:
+            return ""
+        return str(value)
 
 
 class GeminiTable(BaseModel):

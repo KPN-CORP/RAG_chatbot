@@ -85,8 +85,9 @@ DEFAULT_EXTRACTION_PROMPT = (
     "`column_header`, row identifier, and any notes/comments; all non-table text "
     "becomes `narrative` chunks. Preserve line breaks inside cell text and notes. "
     "If a cell embeds another grid, flatten it into the cell text with line "
-    "breaks. Follow this example shape and do not add any text before or after "
-    "the JSON object:\n"
+    "breaks. Do not use null for blank cells or notes—return an empty string "
+    "instead so every cell produces a chunk. Follow this example shape and do "
+    "not add any text before or after the JSON object:\n"
     f"{EXAMPLE_OUTPUT_FORMAT}"
 )
 
@@ -145,8 +146,10 @@ def _sanitize_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 if isinstance(value, (dict, list)):
                     normalized[key] = json.dumps(value, ensure_ascii=False)
                 else:
-                    normalized[key] = value
-        if normalized.get("text"):
+                    normalized[key] = "" if value is None else value
+        if "text" in normalized:
+            # Preserve empty-string cells so that blank grid entries still produce
+            # atomic chunks.
             cleaned.append(normalized)
     return cleaned
 

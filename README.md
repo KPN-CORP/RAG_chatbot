@@ -104,10 +104,13 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
       filter, but pages that include any true table will be routed through
       Gemini first.
 
-    - The Gemini extractor now guards against mixed text/JSON responses and
-      normalizes rows to the same list-of-dicts shape returned by the manual
-      parser while also returning prebuilt cell/narrative chunks. Temporary
-      images created via `pdf2image` are cleaned up immediately after parsing.
+  - The Gemini extractor now guards against mixed text/JSON responses and
+    normalizes rows to the same list-of-dicts shape returned by the manual
+    parser while also returning prebuilt cell/narrative chunks. Temporary
+    images created via `pdf2image` are cleaned up immediately after parsing.
+
+    - Blank table cells are coerced to empty strings instead of `null` so the
+      Pydantic schema accepts every cell chunk without validation failures.
 
   If a table contains complex multi-level headers that render poorly, you can
   render the page to an image and ask Gemini to re-extract the table JSON via
