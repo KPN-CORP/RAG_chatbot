@@ -501,18 +501,33 @@ def gemini_chunks_to_chunks(
     source: str,
     page: Optional[int],
 ) -> List[Dict[str, Any]]:
-    """Convert Gemini chunk payloads into the ingest chunk format."""
+    """Convert Gemini chunk payloads into the ingest chunk format.
+
+    Gemini now returns a list of strings. We still support the legacy dictionary
+    format so historical ingests keep working, but string chunks are converted
+    into minimal chunk dictionaries before hashing.
+    """
 
     converted: List[Dict[str, Any]] = []
     for idx, raw_chunk in enumerate(gemini_chunks or [], 1):
-        text = _format_gemini_chunk_text(raw_chunk)
-        if not text:
+        chunk_meta: Dict[str, Any]
+        if isinstance(raw_chunk, str):
+            text = raw_chunk.strip()
+            if not text:
+                continue
+            chunk_meta = {"chunk_text": text, "chunk_type": "narrative"}
+        elif isinstance(raw_chunk, dict):
+            text = _format_gemini_chunk_text(raw_chunk)
+            if not text:
+                continue
+            chunk_meta = raw_chunk
+        else:
             continue
 
-        chunk_type = raw_chunk.get("chunk_type") or "narrative"
-        table_idx = raw_chunk.get("table_index")
+        chunk_type = chunk_meta.get("chunk_type") or "narrative"
+        table_idx = chunk_meta.get("table_index")
         element_type = (
-            "table_cell" if chunk_type == "table_cell" else raw_chunk.get("chunk_type")
+            "table_cell" if chunk_type == "table_cell" else chunk_meta.get("chunk_type")
         )
 
         chunk_id = f"{doc_id}::gemini::{page or 0:04d}::{idx:04d}"
@@ -532,9 +547,11 @@ def gemini_chunks_to_chunks(
                 "page": page,
                 "element_type": element_type,
                 "table_id": table_idx,
-                "row_id": raw_chunk.get("row_header") or raw_chunk.get("row_index"),
-                "col_name": raw_chunk.get("column_header"),
-                "breadcrumb": raw_chunk.get("title") or raw_chunk.get("title_chain") or "",
+                "row_id": chunk_meta.get("row_header") or chunk_meta.get("row_index"),
+                "col_name": chunk_meta.get("column_header"),
+                "breadcrumb": chunk_meta.get("title")
+                or chunk_meta.get("title_chain")
+                or "",
                 "list_id": None,
             }
         )

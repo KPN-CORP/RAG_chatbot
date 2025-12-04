@@ -9,7 +9,7 @@ legacy ``rows`` payload remains for backward compatibility and is populated from
 
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
 
 
 class ExtractedChunk(BaseModel):
@@ -77,6 +77,18 @@ class ExtractedChunk(BaseModel):
         if value is None:
             return None
         return str(value)
+
+
+class GeminiChunkList(RootModel[List[str]]):
+    """Simplified Gemini output when only chunk strings are returned."""
+
+    root: List[str]
+
+    @property
+    def chunks(self) -> List[str]:
+        """Expose the root list using the same name expected by callers."""
+
+        return self.root
 
 
 class GeminiTable(BaseModel):
