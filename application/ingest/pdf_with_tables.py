@@ -401,7 +401,7 @@ def get_page_elements(pdf_path):
     return pages_output
 
 
-def extract_pdf_content(file):
+def extract_pdf_content(file, use_gemini: str = "use"):
     pdf_pages = get_page_elements(file)
     pdf_pages = check_and_fix_nested_tables(pdf_pages)
     # Gemini now runs for any page that contains at least one table so the
@@ -411,6 +411,7 @@ def extract_pdf_content(file):
     pdf_pages = change_table_format(
         pdf_pages,
         pdf_path=file,
+        use_gemini_mode=use_gemini,
         use_gemini_for_complex=True,
     )
     return pdf_pages

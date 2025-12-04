@@ -30,6 +30,25 @@ class ExtractedChunk(BaseModel):
     text: str = Field(
         ..., description="Raw text for the chunk, preserving line breaks."
     )
+    chunk_text: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional fully-enriched chunk string (title + headers + notes)"
+            " ready for ingestion."
+        ),
+    )
+    title: Optional[str] = Field(
+        default=None,
+        description="Nearest title or section heading associated with the chunk.",
+    )
+    title_chain: Optional[str] = Field(
+        default=None,
+        description="Full hierarchy of titles from the page for enrichment.",
+    )
+    page_notes: Optional[str] = Field(
+        default=None,
+        description="Notes/footnotes that apply to the page as a whole.",
+    )
     table_index: Optional[int] = Field(
         default=None,
         description="0-based order of the table on the page when chunk_type is table-related.",
@@ -50,13 +69,13 @@ class ExtractedChunk(BaseModel):
         description="Inline notes/comments associated with the cell, if present.",
     )
 
-    @field_validator("text", mode="before")
+    @field_validator("text", "chunk_text", "title", "title_chain", "page_notes", mode="before")
     @classmethod
-    def coerce_text(cls, value: Optional[str]) -> str:
-        """Ensure the text field is always a string to satisfy downstream parsing."""
+    def coerce_text_fields(cls, value: Optional[str]) -> Optional[str]:
+        """Ensure text-like fields are always strings to satisfy downstream parsing."""
 
         if value is None:
-            return ""
+            return None
         return str(value)
 
 

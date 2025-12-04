@@ -114,6 +114,19 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
     - Blank table cells are coerced to empty strings instead of `null` so the
       Pydantic schema accepts every cell chunk without validation failures.
 
+  - Control Gemini invocation with the `use_gemini` flag on
+    [`extract_pdf_content`](application/ingest/pdf_with_tables.py). Accepted
+    values are `"use"` (always call Gemini when a table is detected), `"skip"`
+    (force the legacy parsers), or `"fallback"` (only call Gemini for pages that
+    need it based on structure). The default is `"use"`, which keeps chunk
+    formats consistent between Gemini-produced chunks and those built from the
+    manual pipeline.
+
+  - Gemini now returns ready-made `chunks` alongside normalized table rows. The
+    ingest layer accepts these directly when present so you can feed Gemini
+    output into Milvus without re-chunking. Each chunk already contains enriched
+    `chunk_text` with title chains and relevant notes for downstream RAG usage.
+
   If a table contains complex multi-level headers that render poorly, you can
   render the page to an image and ask Gemini to re-extract the table JSON via
   [`ingest/table_image_extractor.py`](application/ingest/table_image_extractor.py):
@@ -174,6 +187,29 @@ The `application/` directory also contains utilities that can be invoked manuall
   ```
 
 Refer to the module docstrings for advanced usage.
+
+### Milvus collection schema
+
+Ingested chunks are stored in Milvus collections created by
+[`ingest/langchain_milvus_ingest.py`](application/ingest/langchain_milvus_ingest.py).
+The schema is intentionally small to keep ingestion fast while retaining rich
+metadata in a JSON field:
+
+- `id` (`VARCHAR`, primary key, max length 128): chunk identifier (`doc_id` +
+  positional suffix).
+- `embedding` (`FLOAT_VECTOR`): Gemini embedding for the chunk text.
+- `checksum` (`VARCHAR`, max length 128): deduplication key used to skip chunks
+  already present in the collection.
+- `text` (`VARCHAR`, max length 65535): raw chunk text used for hybrid search
+  and debugging.
+- `metadata` (`JSON`): structured attributes such as `source`, `page`,
+  `element_type`, `table_id`/`row_id`/`list_id`, `breadcrumb`, and any Q&A
+  fields. The ingestion step strips `chunk_text`/`text` from this blob to avoid
+  duplication while preserving identifiers and breadcrumbs for result displays.
+
+Collections inherit the description from `config.collection_description` and use
+an HNSW/COSINE index by default. You can override the collection name, host, or
+port in your config module before running ingestion.
 
 ## 6. Folder watcher for automatic Milvus sync
 
