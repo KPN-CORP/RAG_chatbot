@@ -505,6 +505,12 @@ def gemini_chunks_to_chunks(
 
     converted: List[Dict[str, Any]] = []
     for idx, raw_chunk in enumerate(gemini_chunks or [], 1):
+        if isinstance(raw_chunk, str):
+            raw_chunk = {
+                "chunk_type": "narrative",
+                "text": raw_chunk,
+                "chunk_text": raw_chunk,
+            }
         text = _format_gemini_chunk_text(raw_chunk)
         if not text:
             continue

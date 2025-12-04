@@ -188,6 +188,9 @@ def _sanitize_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     cleaned: List[Dict[str, Any]] = []
     for chunk in chunks or []:
+        if isinstance(chunk, str):
+            cleaned.extend(_strings_to_chunks([chunk]))
+            continue
         if not isinstance(chunk, dict):
             continue
         normalized: Dict[str, Any] = {}
@@ -215,6 +218,28 @@ def _sanitize_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             # atomic chunks.
             cleaned.append(normalized)
     return cleaned
+
+
+def _strings_to_chunks(strings: List[Any]) -> List[Dict[str, Any]]:
+    """Convert plain string outputs into narrative-style chunk dictionaries."""
+
+    normalized_chunks: List[Dict[str, Any]] = []
+    for item in strings or []:
+        if not isinstance(item, str):
+            continue
+        cleaned = item.strip()
+        if not cleaned:
+            continue
+        normalized_chunks.append(
+            {
+                "chunk_type": "narrative",
+                "text": cleaned,
+                "chunk_text": cleaned,
+                "table_index": None,
+                "row_index": None,
+            }
+        )
+    return normalized_chunks
 
 
 def _rows_to_cell_chunks(
@@ -461,18 +486,33 @@ def extract_table_with_gemini(
                 except Exception:
                     parsed_payload = None
 
-            if isinstance(parsed_payload, list):
-                fallback_rows = _sanitize_rows(parsed_payload)
-            elif isinstance(parsed_payload, dict):
-                maybe_rows = parsed_payload.get("rows") or parsed_payload.get("table")
-                maybe_tables = parsed_payload.get("tables")
-                maybe_chunks = parsed_payload.get("chunks")
-                if isinstance(maybe_rows, list):
-                    fallback_rows = _sanitize_rows(maybe_rows)
-                if isinstance(maybe_tables, list):
-                    fallback_tables = [tbl for tbl in maybe_tables if isinstance(tbl, dict)]
-                if isinstance(maybe_chunks, list):
-                    fallback_chunks = _sanitize_chunks(maybe_chunks)
+        if isinstance(parsed_payload, list):
+            dict_items = [item for item in parsed_payload if isinstance(item, dict)]
+            str_items = [item for item in parsed_payload if isinstance(item, str)]
+            if dict_items:
+                fallback_rows = _sanitize_rows(dict_items)
+            if str_items:
+                fallback_chunks.extend(_strings_to_chunks(str_items))
+        elif isinstance(parsed_payload, dict):
+            maybe_rows = parsed_payload.get("rows") or parsed_payload.get("table")
+            maybe_tables = parsed_payload.get("tables")
+            maybe_chunks = parsed_payload.get("chunks")
+            if isinstance(maybe_rows, list):
+                dict_items = [item for item in maybe_rows if isinstance(item, dict)]
+                str_items = [item for item in maybe_rows if isinstance(item, str)]
+                if dict_items:
+                    fallback_rows = _sanitize_rows(dict_items)
+                if str_items:
+                    fallback_chunks.extend(_strings_to_chunks(str_items))
+            if isinstance(maybe_tables, list):
+                fallback_tables = [tbl for tbl in maybe_tables if isinstance(tbl, dict)]
+            if isinstance(maybe_chunks, list):
+                chunk_dicts = [itm for itm in maybe_chunks if isinstance(itm, dict)]
+                chunk_strings = [itm for itm in maybe_chunks if isinstance(itm, str)]
+                if chunk_dicts:
+                    fallback_chunks.extend(_sanitize_chunks(chunk_dicts))
+                if chunk_strings:
+                    fallback_chunks.extend(_strings_to_chunks(chunk_strings))
 
         final_rows = _sanitize_rows(fallback_rows or [])
         final_tables = fallback_tables
