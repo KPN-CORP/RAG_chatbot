@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 
-LOG_LEVEL = "INFO" # options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+LOG_LEVEL = "DEBUG" # options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 load_dotenv()
 
@@ -28,7 +28,7 @@ top_k_retrieval = 7
 
 google_api_key_name = "GEMINI_API_KEY"  # environment variable name for Gemini/Google API key
 
-WATCH_DIR = r"/home/hcispanel/public_html/nastari-chatbot/pdf-file/"  # change this
+WATCH_DIR = r"../assets/"  # change this
 VALID_EXTS = {".pdf", ".docx", ".txt"}  # adapt to your project
 
 def _escape_prompt_braces(prompt: str, *, allow: set[str]) -> str:

@@ -45,41 +45,6 @@ def _log_context(**kwargs: Any) -> Dict[str, Any]:
 
     return {key: value for key, value in kwargs.items() if value is not None}
 
-EXAMPLE_OUTPUT_FORMAT = """{
-  "tables": [
-    {
-      "table_index": 0,
-      "title": "Optional caption on the page",
-      "rows": [
-        {
-          "Row": "Row 1 label",
-          "Header 1": "row 1 value",
-          "Header 2 - Sub A": "row 1 nested detail",
-          "Notes": "line 1\\nline 2"
-        },
-        {
-          "Row": "Row 2 label",
-          "Header 1": "row 2 value",
-          "Header 2 - Sub A": "row 2 nested detail",
-          "Notes": null
-        }
-      ]
-    }
-  ],
-  "chunks": [
-    {
-      "chunk_type": "table_cell",
-      "table_index": 0,
-      "row_index": 0,
-      "row_header": "Row 1 label",
-      "column_header": "Header 1",
-      "text": "row 1 value",
-      "notes": "line 1\\nline 2"
-    },
-    {"chunk_type": "narrative", "text": "Narrative paragraph outside any table."}
-  ]
-}"""
-
 
 DEFAULT_EXTRACTION_PROMPT = textwrap.dedent(
     f"""
@@ -126,7 +91,7 @@ DEFAULT_EXTRACTION_PROMPT = textwrap.dedent(
     4. Tables:
        - First understand the table logically (headers and what they mean).
        - Create chunks that represent meaningful rules, not raw grid cells.
-       - Example: the row “Lembur di Hari Kerja, ≥2–5 jam, Gol.2 = Sesuai UU, Gol.3 = 96.000, Gol.4 = 126.000” should be one chunk describing that rule, not four separate chunks.
+       - Example: the row “Lembur di Hari Kerja, ≥2-5 jam, Gol.2 = Sesuai UU, Gol.3 = 96.000, Gol.4 = 126.000” should be one chunk describing that rule, not four separate chunks.
        - If different cells in a row clearly express separate rules, you may split them, but never in a way that loses meaning.
 
     5. Narrative text outside tables:
@@ -151,7 +116,7 @@ DEFAULT_EXTRACTION_PROMPT = textwrap.dedent(
     "<Title chain> | <Semantic context> | <Information> | Notes: <note text or '-'>"
 
     Examples of semantic context:
-    - "Lembur di Hari Kerja, ≥2–5 jam, Gol.2–4"
+    - "Lembur di Hari Kerja, ≥2-5 jam, Gol.2-4"
     - "Pengajuan lembur"
     - "Durasi lembur"
     - "Perhitungan realisasi jam kerja lembur"
@@ -166,8 +131,8 @@ DEFAULT_EXTRACTION_PROMPT = textwrap.dedent(
     Example output shape (structure only):
 
     [
-      "KOMPENSASI KELEBIHAN JAM KERJA DI HEAD OFFICE – LAMPIRAN | Lembur di Hari Kerja, ≥2–5 jam, Gol.2–4 | Gol.2: Sesuai UU; Gol.3: 96.000; Gol.4: 126.000 | Notes: -",
-      "KOMPENSASI KELEBIHAN JAM KERJA DI HEAD OFFICE – LAMPIRAN | Durasi lembur | Durasi < 30 menit tidak dihitung sebagai jam kerja lembur | Notes: -"
+      "KOMPENSASI KELEBIHAN JAM KERJA DI HEAD OFFICE - LAMPIRAN | Lembur di Hari Kerja, ≥2-5 jam, Gol.2-4 | Gol.2: Sesuai UU; Gol.3: 96.000; Gol.4: 126.000 | Notes: -",
+      "KOMPENSASI KELEBIHAN JAM KERJA DI HEAD OFFICE - LAMPIRAN | Durasi lembur | Durasi < 30 menit tidak dihitung sebagai jam kerja lembur | Notes: -"
     ]
 
     BEFORE OUTPUT
@@ -183,7 +148,6 @@ DEFAULT_EXTRACTION_PROMPT = textwrap.dedent(
     The JSON array you output must be freshly generated from the current page.
     Do not copy any example chunks from this prompt.
     Do not include any explanation, comments, code fences, or extra text before or after the JSON array.
-    {EXAMPLE_OUTPUT_FORMAT}
     """
 )
 
