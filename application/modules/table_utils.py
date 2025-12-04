@@ -1083,6 +1083,13 @@ def _maybe_use_gemini_for_table(
         )
         return None
 
+    if not result.get("rows") and not result.get("chunks"):
+        logger.warning(
+            "Gemini returned no rows or chunks; using manual parser",
+            extra=_log_context(pdf_path=pdf_path, page=page_number),
+        )
+        return None
+
     if result.get("rows") or result.get("chunks"):
         logger.info(
             "Using Gemini image extractor output",

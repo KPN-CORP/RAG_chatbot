@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import textwrap
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -80,53 +81,110 @@ EXAMPLE_OUTPUT_FORMAT = """{
 }"""
 
 
-DEFAULT_EXTRACTION_PROMPT = (
-    "You are an OCR + vision-language assistant for a Retrieval-Augmented "
-    "Generation (RAG) system. You always receive exactly one page of a document "
-    "(as an image or rendered PDF page). Your job is to: 1) Read all text on the "
-    "page using OCR and visual understanding (including tables, headers, "
-    "footnotes, and narrative paragraphs). 2) Break the page into atomic chunks "
-    "suitable for RAG. 3) Output a JSON list of dictionaries, where each "
-    "dictionary represents a single cell-like atomic chunk. \n\n"
-    "Atomic chunking rules: the atomic unit is a cell. For any table (simple, "
-    "complex, double/triple header, matrix, non-matrix, nested table, messy "
-    "grid, etc.), one visual cell = one chunk. A cell means the smallest visually "
-    "separated box of text at the final level after spans are resolved. Header "
-    "cells (column headers, row headers, sub-headers, stubs) are also chunks. "
-    "Ignore purely decorative/empty cells. Narrative text outside tables (titles, "
-    "paragraphs, bullet lists, numbered lists, notes) must be treated as if they "
-    "were table cells: a stand-alone paragraph or block of bullets = one chunk. "
-    "Very long blocks can be split into semantically coherent sentences or bullet "
-    "items, but never break a sentence in the middle. Each chunk must be "
-    "semantically self-contained.\n\n"
-    "Always include titles and notes (atomic chunk enrichment). Detect all titles "
-    "at the top of the page or section (main title, subtitle/section/sub-section) "
-    "and any notes/footnotes/legends (asterisks like *), 1), 2), 'Catatan', "
-    "'Note', 'Remarks', etc.). For every chunk, attach the full title chain as "
-    "metadata, attach all notes relevant to this page as metadata, and embed the "
-    "title and notes text into the chunk_text string so the chunk is self-"
-    "sufficient for RAG. Never translate or rewrite titles/notes.\n\n"
-    "Complex tables (double/triple headers, nested tables, matrices): for each "
-    "data cell (including header cells) determine the column header path (top to "
-    "bottom) and row header path (left to right). If a header spans multiple "
-    "rows/columns, repeat its text for all child cells. Nested tables should be "
-    "flattened so innermost cells remain chunks with accurate header paths. The "
-    "chunk text must clearly encode the title chain, row header path, column "
-    "header path, actual cell value, and any relevant notes.\n\n"
-    "Return JSON that matches the schema instructions exactly. Identify *all* "
-    "tables on the page (not just complex ones) and keep multi-level headers "
-    "concatenated with ' - ' in the same key. For each table, return its rows "
-    "under `tables` with the correct `table_index` order (top-to-bottom, left-to-"
-    "right on the page). Also segment the entire page into atomic chunks: every "
-    "table cell is one `table_cell` chunk with its `table_index`, `row_index`, "
-    "`column_header`, row identifier, and any notes/comments; all non-table text "
-    "becomes `narrative` chunks. Include the fully enriched `chunk_text` for each "
-    "entry when possible. Preserve line breaks inside cell text and notes. If a "
-    "cell embeds another grid, flatten it into the cell text with line breaks. "
-    "Do not use null for blank cells or notes—return an empty string instead so "
-    "every cell produces a chunk. Follow this example shape and do not add any "
-    "text before or after the JSON object:\n"
-    f"{EXAMPLE_OUTPUT_FORMAT}"
+DEFAULT_EXTRACTION_PROMPT = textwrap.dedent(
+    f"""
+    You are an OCR + Vision-Language assistant used in a Retrieval-Augmented Generation (RAG) system.
+
+    You receive exactly one document page at a time (image or rendered page). Your job is NOT to mechanically extract tables. Your job is to read, understand, and segment the page into the best possible set of useful information chunks.
+
+    STRICT NON-HALLUCINATION RULES
+
+    You MUST only output information that is explicitly visible on the page.
+
+    - Never invent, infer, or correct policy content, numbers, dates, or ranges.
+    - Never complete partially visible patterns based on prior or outside knowledge.
+    - If some text or number is unreadable or too blurry, write "[UNREADABLE]" instead of guessing.
+    - If you are not sure whether a value belongs to one column or another, mark the ambiguous part as "[UNSURE]" or skip that chunk entirely.
+    - If a cell appears empty, do not fill it with "-", "0", or any assumed value unless that exact symbol is present.
+    - Do not summarize, paraphrase, or expand the policy. Copy the wording as literally as possible.
+    - If you are unsure whether a chunk’s content is truly present on the page, it is safer to SKIP that chunk than to guess.
+
+    CHUNKING RULES
+
+    Each chunk must:
+    - Express one clear piece of information that can stand alone (semantically atomic).
+    - Include the title(s) of the page or section and any relevant notes (so it is self-contained).
+    - Be useful for retrieval and answering questions later.
+
+    You must handle complex layouts, including:
+    - Simple or messy tables, multi-level headers, merged cells, nested tables, matrices, or non-grid layouts.
+    - Narrative text, bullets, numbered lists, and footnotes outside tables.
+
+    1. Title chain:
+       - Detect the main title and any subtitles or section titles.
+       - For every chunk, include this title chain.
+
+    2. Notes:
+       - Detect notes/footnotes/legends (for example *, 1), 2), “Catatan”, “Note”).
+       - If a note clearly applies to some information, include its text in the chunk.
+
+    3. Focus on INFORMATION, not structure:
+       - Keep policy statements, conditions, ranges, durations, entitlements, monetary values, percentages, eligibility rules, procedures, etc.
+       - Ignore empty cells, pure layout labels, row/column indices, decorative elements, or “CONTROLLED COPY”-type stamps unless they change policy meaning.
+       - Ignore “No” columns or row numbers if they have no semantic meaning.
+
+    4. Tables:
+       - First understand the table logically (headers and what they mean).
+       - Create chunks that represent meaningful rules, not raw grid cells.
+       - Example: the row “Lembur di Hari Kerja, ≥2–5 jam, Gol.2 = Sesuai UU, Gol.3 = 96.000, Gol.4 = 126.000” should be one chunk describing that rule, not four separate chunks.
+       - If different cells in a row clearly express separate rules, you may split them, but never in a way that loses meaning.
+
+    5. Narrative text outside tables:
+       - Each coherent paragraph, bullet list, or numbered list becomes one chunk if it expresses a single concept or procedure.
+       - If a paragraph contains several distinct rules, you may split it into multiple chunks, but do not cut sentences in half.
+
+    6. Language and fidelity:
+       - Preserve the original language, numbers, symbols, ranges, and units exactly (for example “≥ 2 s.d. ≤ 5 jam”, “Rp60.000,00”).
+       - Do not rewrite in your own words; keep the meaning faithful to the original.
+       - If OCR is uncertain, write your best guess, but never add information that is not there.
+
+    CHUNK TEXT FORMAT
+
+    For each chunk, output a single string that combines (if present):
+    - The title chain.
+    - A short semantic context (for example a section name, row label, or condition).
+    - The actual rule or information.
+    - Any relevant notes.
+
+    Use a consistent pattern:
+
+    "<Title chain> | <Semantic context> | <Information> | Notes: <note text or '-'>"
+
+    Examples of semantic context:
+    - "Lembur di Hari Kerja, ≥2–5 jam, Gol.2–4"
+    - "Pengajuan lembur"
+    - "Durasi lembur"
+    - "Perhitungan realisasi jam kerja lembur"
+
+    OUTPUT FORMAT
+
+    Your final output must be ONLY a JSON array of strings.
+    Each string is one chunk text as described above.
+    Do not include any objects, keys, metadata, comments, or explanations.
+    Do not add any text before or after the JSON.
+
+    Example output shape (structure only):
+
+    [
+      "KOMPENSASI KELEBIHAN JAM KERJA DI HEAD OFFICE – LAMPIRAN | Lembur di Hari Kerja, ≥2–5 jam, Gol.2–4 | Gol.2: Sesuai UU; Gol.3: 96.000; Gol.4: 126.000 | Notes: -",
+      "KOMPENSASI KELEBIHAN JAM KERJA DI HEAD OFFICE – LAMPIRAN | Durasi lembur | Durasi < 30 menit tidak dihitung sebagai jam kerja lembur | Notes: -"
+    ]
+
+    BEFORE OUTPUT
+
+    Before returning the JSON array, check each candidate chunk:
+    - Does it contain real information (not just structure)?
+    - Can it stand alone and still make sense?
+    - Does it include the title chain and any relevant notes?
+    - Is it faithful to the original page?
+
+    If the answer is yes, include it. If not, adjust or discard the chunk.
+
+    The JSON array you output must be freshly generated from the current page.
+    Do not copy any example chunks from this prompt.
+    Do not include any explanation, comments, code fences, or extra text before or after the JSON array.
+    {EXAMPLE_OUTPUT_FORMAT}
+    """
 )
 
 
