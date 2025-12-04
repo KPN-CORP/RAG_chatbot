@@ -9,7 +9,8 @@ import copy
 import json
 import os
 import re
-from typing import Any, Iterable, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Iterable, List, Literal, Optional, Tuple
 
 from fuzzywuzzy import fuzz, process
 
@@ -17,6 +18,13 @@ from config_loader import load_config
 from logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+def _log_context(*, pdf_path: Optional[str], page: Optional[int] = None, table: Optional[int] = None) -> dict:
+    """Return a compact logging context for tidy, document-aware messages."""
+
+    pdf_name = Path(pdf_path).name if pdf_path else None
+    return {k: v for k, v in {"pdf": pdf_name, "page": page, "table": table}.items() if v is not None}
 
 
 # --- geometry helpers -----------------------------------------------------
@@ -1038,11 +1046,12 @@ def _maybe_use_gemini_for_table(
     prompt: Optional[str] = None,
     model_name: Optional[str] = None,
     api_key: Optional[str] = None,
-) -> Optional[list]:
-    """Try extracting a complex table via the Gemini image-based helper.
+) -> Optional[dict]:
+    """Extract a page with Gemini, returning the structured response when possible.
 
-    Any failure returns ``None`` so callers can quietly fall back to the
-    traditional table parsing path without interrupting ingestion.
+    Gemini is invoked for *every* page containing a table so the model can own
+    the cell-level chunking. Any failure returns ``None`` so ingestion can still
+    proceed using the legacy parser documented below.
     """
 
     if not pdf_path:
@@ -1051,7 +1060,11 @@ def _maybe_use_gemini_for_table(
     try:
         from ingest.table_image_extractor import extract_table_with_gemini
     except Exception as exc:  # pragma: no cover - optional dependency
-        logger.warning("Gemini extractor unavailable", exc_info=exc)
+        logger.warning(
+            "Gemini extractor unavailable",
+            extra=_log_context(pdf_path=pdf_path, page=page_number),
+            exc_info=exc,
+        )
         return None
 
     try:
@@ -1065,32 +1078,55 @@ def _maybe_use_gemini_for_table(
     except Exception as exc:  # pragma: no cover - remote call issues
         logger.warning(
             "Gemini extraction failed; falling back to default parser",
-            extra={"page": page_number},
+            extra=_log_context(pdf_path=pdf_path, page=page_number),
             exc_info=exc,
         )
         return None
 
-    gemini_rows = result.get("rows")
-    if not gemini_rows:
-        gemini_rows = _parse_gemini_table_response(result.get("model_response"))
-
-    if gemini_rows:
-        logger.debug(
-            "Using Gemini image extractor output for complex table",
-            extra={"page": page_number},
+    if not result.get("rows") and not result.get("chunks"):
+        logger.warning(
+            "Gemini returned no rows or chunks; using manual parser",
+            extra=_log_context(pdf_path=pdf_path, page=page_number),
         )
-    return gemini_rows
+        return None
+
+    if result.get("rows") or result.get("chunks"):
+        logger.info(
+            "Using Gemini image extractor output",
+            extra=_log_context(pdf_path=pdf_path, page=page_number),
+        )
+    return result
+
+
+def _page_needs_gemini(pdf_page: dict) -> bool:
+    """Lightweight heuristic to decide when Gemini should run in fallback mode."""
+
+    for tbl in pdf_page.get("tables") or []:
+        records = tbl.get("table_dct")
+        if not records:
+            return True
+        try:
+            if _table_has_nested_cells(records) or _has_more_than_double_headers(records):
+                return True
+        except Exception:
+            continue
+    return False
 
 def change_table_format(
     pdf_pages,
     *,
     pdf_path: Optional[str] = None,
+    use_gemini_mode: Literal["use", "skip", "fallback"] = "use",
     use_gemini_for_complex: bool = False,
     gemini_prompt: Optional[str] = None,
     gemini_model: Optional[str] = None,
     gemini_api_key: Optional[str] = None,
 ):
-    """Normalize table rows into records, with optional Gemini fallback."""
+    """Normalize table rows into records, invoking Gemini for every table page."""
+
+    # ``use_gemini_for_complex`` is retained for backward compatibility, but the
+    # Gemini image extractor now runs for any page containing a table so the
+    # model can enforce the atomic cell-chunk rule directly.
 
     # Resolve Gemini defaults from the active config so we mirror app.py usage.
     config = load_config()
@@ -1104,10 +1140,39 @@ def change_table_format(
     # renders an entire page (not a specific table bbox), so one invocation per
     # page is sufficient and much cheaper than re-rendering for every table on
     # that page.
-    gemini_page_cache: dict[tuple[Optional[str], int], Optional[list]] = {}
+    gemini_page_cache: dict[tuple[Optional[str], int], Optional[dict]] = {}
 
     for page_idx, page in enumerate(pdf_pages):
+        mode = (use_gemini_mode or "use").lower()
         if page["tables"]:
+            logger.info(
+                "Normalizing page tables",
+                extra=_log_context(pdf_path=pdf_path, page=page_idx + 1),
+            )
+            should_use_gemini = mode == "use" or (
+                mode == "fallback" and (_page_needs_gemini(page) or use_gemini_for_complex)
+            )
+
+            gemini_result: Optional[dict] = None
+            if should_use_gemini:
+                cache_key = (pdf_path, page_idx + 1)
+                if cache_key in gemini_page_cache:
+                    gemini_result = gemini_page_cache[cache_key]
+                else:
+                    gemini_result = _maybe_use_gemini_for_table(
+                        pdf_path=pdf_path,
+                        page_number=page_idx + 1,
+                        prompt=gemini_prompt,
+                        model_name=resolved_model,
+                        api_key=resolved_api_key,
+                    )
+                    gemini_page_cache[cache_key] = gemini_result
+
+            # Gemini now owns the chunking; store chunks on the page for later
+            # ingestion and keep the legacy parser below as documentation only.
+            if gemini_result and gemini_result.get("chunks"):
+                page["gemini_chunks"] = gemini_result.get("chunks")
+
             for i, dct in enumerate(page["tables"]):
                 records = dct.get("table_dct")
                 if records:
@@ -1119,7 +1184,9 @@ def change_table_format(
                     except Exception as exc:
                         logger.warning(
                             "Header detection failed; treating table as simple",  # noqa: TRY400
-                            extra={"page": page_idx + 1, "table": i},
+                            extra=_log_context(
+                                pdf_path=pdf_path, page=page_idx + 1, table=i
+                            ),
                             exc_info=exc,
                         )
                         is_double_header = False
@@ -1130,7 +1197,9 @@ def change_table_format(
                     if has_nested_cells:
                         logger.debug(
                             "Nested cells detected post-repair; enabling Gemini fallback",
-                            extra={"page": page_idx + 1, "table": i},
+                            extra=_log_context(
+                                pdf_path=pdf_path, page=page_idx + 1, table=i
+                            ),
                         )
                     has_multi_level_header = (
                         is_triple_header or _has_more_than_double_headers(records)
@@ -1141,7 +1210,17 @@ def change_table_format(
 
                     table = clean_table(dct)
                     gemini_rows: Optional[list] = None
+                    gemini_tables: Optional[list] = None
 
+                    # Always use Gemini when a table exists on the page. Gemini
+                    # decides chunking (cell-level + narrative) so manual parsing
+                    # is only used if the model output is missing.
+                    if gemini_result:
+                        gemini_rows = gemini_result.get("rows")
+                        gemini_tables = gemini_result.get("tables")
+
+                    """
+                    Legacy Gemini gating (retained for documentation):
                     if (
                         use_gemini_for_complex
                         and not looks_like_plain_text
@@ -1149,41 +1228,24 @@ def change_table_format(
                         and (has_multi_level_header or has_nested_cells)
                         and col_count > 1
                     ):
-                        # Deep multi-level headers or nested tables are prone to
-                        # distortion. Try the image-based Gemini extractor for cleaner
-                        # JSON output before falling back to the built-in logic.
-                        cache_key = (pdf_path, page_idx + 1)
-                        if cache_key in gemini_page_cache:
-                            logger.debug(
-                                "Using cached Gemini extraction for page; skipping re-render",
-                                extra={"page": page_idx + 1, "table": i},
-                            )
-                            gemini_rows = gemini_page_cache[cache_key]
-                        else:
-                            gemini_rows = _maybe_use_gemini_for_table(
-                                pdf_path=pdf_path,
-                                page_number=page_idx + 1,
-                                prompt=gemini_prompt,
-                                model_name=resolved_model,
-                                api_key=resolved_api_key,
-                            )
-                            gemini_page_cache[cache_key] = gemini_rows
+                        ...
                     elif (
                         (looks_like_plain_text or definition_table)
                         and (has_multi_level_header or has_nested_cells)
                     ):
-                        logger.debug(
-                            "Skipping Gemini for simple prose-style table; using manual parser",
-                            extra={
-                                "page": page_idx + 1,
-                                "table": i,
-                                "rows": row_count,
-                                "cols": col_count,
-                            },
-                        )
+                        logger.debug("Skipping Gemini …")
+                    """
 
                     try:
-                        if gemini_rows and all(isinstance(r, dict) for r in gemini_rows):
+                        if gemini_tables and isinstance(gemini_tables, list):
+                            matching = [
+                                tbl for tbl in gemini_tables if tbl.get("table_index") == i
+                            ]
+                            if matching:
+                                records = matching[0].get("rows") or records
+                        elif gemini_rows and all(
+                            isinstance(r, dict) for r in gemini_rows
+                        ):
                             records = gemini_rows
                         elif is_triple_header:
                             records = process_triple_header_table(table)

@@ -1,6 +1,12 @@
-"""PDF extraction helpers that rely on table utilities."""
+"""PDF extraction helpers that rely on table utilities.
+
+This module identifies tables on a PDF page, keeps narrative text, and delegates
+table normalization to :func:`modules.table_utils.change_table_format`, which
+now always invokes the Gemini page extractor whenever a table exists on a page.
+"""
 
 import pdfplumber
+from pathlib import Path
 
 from typing import List, Dict, Any
 
@@ -82,6 +88,8 @@ def _merge_floating_trailing_numbers(grouped_words: List[List[Dict[str, Any]]]) 
 
 
 def get_page_elements(pdf_path):
+    pdf_name = Path(pdf_path).name
+    logger.info("Scanning PDF for tables and narrative", extra={"pdf": pdf_name})
     pages_output = []
     with pdfplumber.open(pdf_path) as pdf:
         for pidx, page in enumerate(pdf.pages, start=1):
@@ -243,7 +251,7 @@ def get_page_elements(pdf_path):
                 removed = sorted(indices_to_remove)
                 logger.debug(
                     "Reclassifying framed text as narrative text; removing tables",
-                    extra={"page": pidx, "tables_removed": removed},
+                    extra={"pdf": pdf_name, "page": pidx, "tables_removed": removed},
                 )
                 return remaining_tables, remaining_bboxes
 
@@ -393,15 +401,17 @@ def get_page_elements(pdf_path):
     return pages_output
 
 
-def extract_pdf_content(file):
+def extract_pdf_content(file, use_gemini: str = "use"):
     pdf_pages = get_page_elements(file)
     pdf_pages = check_and_fix_nested_tables(pdf_pages)
-    # When the table detector encounters complex layouts (e.g., triple headers),
-    # try the Gemini image-based extractor before falling back to the legacy
-    # header-normalization logic.
+    # Gemini now runs for any page that contains at least one table so the
+    # extractor can directly produce atomic cell + narrative chunks. The
+    # ``use_gemini_for_complex`` flag is retained for compatibility, but the
+    # change_table_format helper always handles the Gemini invocation.
     pdf_pages = change_table_format(
         pdf_pages,
         pdf_path=file,
+        use_gemini_mode=use_gemini,
         use_gemini_for_complex=True,
     )
     return pdf_pages

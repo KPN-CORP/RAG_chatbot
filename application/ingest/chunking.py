@@ -470,6 +470,95 @@ def table_cells_to_chunks(
     return out
 
 
+def _format_gemini_chunk_text(chunk: Dict[str, Any]) -> str:
+    """Create a chunk_text string from Gemini chunk metadata."""
+
+    base_text = (chunk.get("chunk_text") or chunk.get("text") or "").strip()
+    title = chunk.get("title") or chunk.get("title_chain") or ""
+    notes = chunk.get("notes") or chunk.get("page_notes")
+
+    if chunk.get("chunk_type") == "table_cell":
+        row_header = chunk.get("row_header")
+        row_label = row_header if row_header else f"Row[{chunk.get('row_index', '')}]"
+        col_label = chunk.get("column_header") or ""
+        prefix = f"{title} — " if title else ""
+        text = (
+            f"{prefix}{row_label} • Col[{col_label}] ⇒ {base_text}"
+        ).strip()
+    else:
+        text = f"{title} — {base_text}".strip(" —") if title else base_text
+
+    if notes:
+        text = f"{text}\nNotes: {notes}" if text else f"Notes: {notes}"
+
+    return text.strip()
+
+
+def gemini_chunks_to_chunks(
+    gemini_chunks: List[Dict[str, Any]],
+    *,
+    doc_id: str,
+    source: str,
+    page: Optional[int],
+) -> List[Dict[str, Any]]:
+    """Convert Gemini chunk payloads into the ingest chunk format.
+
+    Gemini now returns a list of strings. We still support the legacy dictionary
+    format so historical ingests keep working, but string chunks are converted
+    into minimal chunk dictionaries before hashing.
+    """
+
+    converted: List[Dict[str, Any]] = []
+    for idx, raw_chunk in enumerate(gemini_chunks or [], 1):
+        chunk_meta: Dict[str, Any]
+        if isinstance(raw_chunk, str):
+            text = raw_chunk.strip()
+            if not text:
+                continue
+            chunk_meta = {"chunk_text": text, "chunk_type": "narrative"}
+        elif isinstance(raw_chunk, dict):
+            text = _format_gemini_chunk_text(raw_chunk)
+            if not text:
+                continue
+            chunk_meta = raw_chunk
+        else:
+            continue
+
+        chunk_type = chunk_meta.get("chunk_type") or "narrative"
+        table_idx = chunk_meta.get("table_index")
+        element_type = (
+            "table_cell" if chunk_type == "table_cell" else chunk_meta.get("chunk_type")
+        )
+
+        chunk_id = f"{doc_id}::gemini::{page or 0:04d}::{idx:04d}"
+        checksum = _checksum(
+            text,
+            source=source,
+            page=page,
+            extra={"kind": "gemini", "i": idx, "type": chunk_type},
+        )
+
+        converted.append(
+            {
+                "chunk_id": chunk_id,
+                "chunk_text": text,
+                "checksum": checksum,
+                "source": source,
+                "page": page,
+                "element_type": element_type,
+                "table_id": table_idx,
+                "row_id": chunk_meta.get("row_header") or chunk_meta.get("row_index"),
+                "col_name": chunk_meta.get("column_header"),
+                "breadcrumb": chunk_meta.get("title")
+                or chunk_meta.get("title_chain")
+                or "",
+                "list_id": None,
+            }
+        )
+
+    return converted
+
+
 # -----------------------------
 # Page-level builder (with section carry)
 # -----------------------------
@@ -501,6 +590,18 @@ def build_chunks_from_pages(
 
     for pg in pages_sorted:
         page_no = pg.get("page")
+        gemini_chunks = pg.get("gemini_chunks")
+        if gemini_chunks:
+            built.extend(
+                gemini_chunks_to_chunks(
+                    gemini_chunks,
+                    doc_id=doc_id,
+                    source=source,
+                    page=page_no if page_no is not None else -1,
+                )
+            )
+            # Gemini already emitted atomic chunks; skip legacy parsing paths.
+            continue
         nar = (pg.get("narrative_text") or "").strip()
         tables = pg.get("tables") or []
         lines_with_meta=pg.get("narrative_lines")
