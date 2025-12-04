@@ -81,19 +81,51 @@ EXAMPLE_OUTPUT_FORMAT = """{
 
 
 DEFAULT_EXTRACTION_PROMPT = (
-    "You are a data extraction assistant. Read the provided full page image and "
-    "return JSON that matches the schema instructions exactly. Identify *all* "
+    "You are an OCR + vision-language assistant for a Retrieval-Augmented "
+    "Generation (RAG) system. You always receive exactly one page of a document "
+    "(as an image or rendered PDF page). Your job is to: 1) Read all text on the "
+    "page using OCR and visual understanding (including tables, headers, "
+    "footnotes, and narrative paragraphs). 2) Break the page into atomic chunks "
+    "suitable for RAG. 3) Output a JSON list of dictionaries, where each "
+    "dictionary represents a single cell-like atomic chunk. \n\n"
+    "Atomic chunking rules: the atomic unit is a cell. For any table (simple, "
+    "complex, double/triple header, matrix, non-matrix, nested table, messy "
+    "grid, etc.), one visual cell = one chunk. A cell means the smallest visually "
+    "separated box of text at the final level after spans are resolved. Header "
+    "cells (column headers, row headers, sub-headers, stubs) are also chunks. "
+    "Ignore purely decorative/empty cells. Narrative text outside tables (titles, "
+    "paragraphs, bullet lists, numbered lists, notes) must be treated as if they "
+    "were table cells: a stand-alone paragraph or block of bullets = one chunk. "
+    "Very long blocks can be split into semantically coherent sentences or bullet "
+    "items, but never break a sentence in the middle. Each chunk must be "
+    "semantically self-contained.\n\n"
+    "Always include titles and notes (atomic chunk enrichment). Detect all titles "
+    "at the top of the page or section (main title, subtitle/section/sub-section) "
+    "and any notes/footnotes/legends (asterisks like *), 1), 2), 'Catatan', "
+    "'Note', 'Remarks', etc.). For every chunk, attach the full title chain as "
+    "metadata, attach all notes relevant to this page as metadata, and embed the "
+    "title and notes text into the chunk_text string so the chunk is self-"
+    "sufficient for RAG. Never translate or rewrite titles/notes.\n\n"
+    "Complex tables (double/triple headers, nested tables, matrices): for each "
+    "data cell (including header cells) determine the column header path (top to "
+    "bottom) and row header path (left to right). If a header spans multiple "
+    "rows/columns, repeat its text for all child cells. Nested tables should be "
+    "flattened so innermost cells remain chunks with accurate header paths. The "
+    "chunk text must clearly encode the title chain, row header path, column "
+    "header path, actual cell value, and any relevant notes.\n\n"
+    "Return JSON that matches the schema instructions exactly. Identify *all* "
     "tables on the page (not just complex ones) and keep multi-level headers "
     "concatenated with ' - ' in the same key. For each table, return its rows "
     "under `tables` with the correct `table_index` order (top-to-bottom, left-to-"
     "right on the page). Also segment the entire page into atomic chunks: every "
     "table cell is one `table_cell` chunk with its `table_index`, `row_index`, "
     "`column_header`, row identifier, and any notes/comments; all non-table text "
-    "becomes `narrative` chunks. Preserve line breaks inside cell text and notes. "
-    "If a cell embeds another grid, flatten it into the cell text with line "
-    "breaks. Do not use null for blank cells or notes—return an empty string "
-    "instead so every cell produces a chunk. Follow this example shape and do "
-    "not add any text before or after the JSON object:\n"
+    "becomes `narrative` chunks. Include the fully enriched `chunk_text` for each "
+    "entry when possible. Preserve line breaks inside cell text and notes. If a "
+    "cell embeds another grid, flatten it into the cell text with line breaks. "
+    "Do not use null for blank cells or notes—return an empty string instead so "
+    "every cell produces a chunk. Follow this example shape and do not add any "
+    "text before or after the JSON object:\n"
     f"{EXAMPLE_OUTPUT_FORMAT}"
 )
 
@@ -140,12 +172,15 @@ def _sanitize_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         for key in (
             "chunk_type",
             "text",
+            "chunk_text",
             "table_index",
             "row_index",
             "column_header",
             "row_header",
             "notes",
             "title",
+            "title_chain",
+            "page_notes",
         ):
             if key in chunk:
                 value = chunk[key]

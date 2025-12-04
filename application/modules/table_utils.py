@@ -10,7 +10,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any, Iterable, List, Literal, Optional, Tuple
 
 from fuzzywuzzy import fuzz, process
 
@@ -1090,10 +1090,26 @@ def _maybe_use_gemini_for_table(
         )
     return result
 
+
+def _page_needs_gemini(pdf_page: dict) -> bool:
+    """Lightweight heuristic to decide when Gemini should run in fallback mode."""
+
+    for tbl in pdf_page.get("tables") or []:
+        records = tbl.get("table_dct")
+        if not records:
+            return True
+        try:
+            if _table_has_nested_cells(records) or _has_more_than_double_headers(records):
+                return True
+        except Exception:
+            continue
+    return False
+
 def change_table_format(
     pdf_pages,
     *,
     pdf_path: Optional[str] = None,
+    use_gemini_mode: Literal["use", "skip", "fallback"] = "use",
     use_gemini_for_complex: bool = False,
     gemini_prompt: Optional[str] = None,
     gemini_model: Optional[str] = None,
@@ -1120,23 +1136,30 @@ def change_table_format(
     gemini_page_cache: dict[tuple[Optional[str], int], Optional[dict]] = {}
 
     for page_idx, page in enumerate(pdf_pages):
+        mode = (use_gemini_mode or "use").lower()
         if page["tables"]:
             logger.info(
                 "Normalizing page tables",
                 extra=_log_context(pdf_path=pdf_path, page=page_idx + 1),
             )
-            cache_key = (pdf_path, page_idx + 1)
-            if cache_key in gemini_page_cache:
-                gemini_result = gemini_page_cache[cache_key]
-            else:
-                gemini_result = _maybe_use_gemini_for_table(
-                    pdf_path=pdf_path,
-                    page_number=page_idx + 1,
-                    prompt=gemini_prompt,
-                    model_name=resolved_model,
-                    api_key=resolved_api_key,
-                )
-                gemini_page_cache[cache_key] = gemini_result
+            should_use_gemini = mode == "use" or (
+                mode == "fallback" and (_page_needs_gemini(page) or use_gemini_for_complex)
+            )
+
+            gemini_result: Optional[dict] = None
+            if should_use_gemini:
+                cache_key = (pdf_path, page_idx + 1)
+                if cache_key in gemini_page_cache:
+                    gemini_result = gemini_page_cache[cache_key]
+                else:
+                    gemini_result = _maybe_use_gemini_for_table(
+                        pdf_path=pdf_path,
+                        page_number=page_idx + 1,
+                        prompt=gemini_prompt,
+                        model_name=resolved_model,
+                        api_key=resolved_api_key,
+                    )
+                    gemini_page_cache[cache_key] = gemini_result
 
             # Gemini now owns the chunking; store chunks on the page for later
             # ingestion and keep the legacy parser below as documentation only.
