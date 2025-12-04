@@ -7,7 +7,7 @@ legacy ``rows`` payload remains for backward compatibility and is populated from
 ``tables`` when absent.
 """
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -127,51 +127,11 @@ class ExtractedTable(BaseModel):
         ),
     )
 
-    @model_validator(mode="before")
-    @classmethod
-    def coerce_string_list_payload(cls, value: Any):
-        """Allow bare list-of-string outputs from Gemini.
-
-        Some Gemini prompts now return a JSON array of chunk strings instead of a
-        structured object. This validator normalizes that payload into the
-        schema by wrapping each string as a narrative chunk while keeping the
-        existing structured fields intact when they are present.
-        """
-
-        if isinstance(value, list):
-            return {"chunks": value, "rows": [], "tables": []}
-        return value
-
     @field_validator("rows", mode="before")
     @classmethod
     def coerce_rows(cls, value):
         if value in (None, ""):
             return []
-        return value
-
-    @field_validator("chunks", mode="before")
-    @classmethod
-    def coerce_chunks(cls, value):
-        """Convert string chunks into structured chunk dictionaries."""
-
-        if value in (None, ""):
-            return []
-
-        normalized: List[Dict[str, Any]] = []
-        if isinstance(value, list):
-            for item in value:
-                if isinstance(item, str):
-                    normalized.append(
-                        {
-                            "chunk_type": "narrative",
-                            "text": item,
-                            "chunk_text": item,
-                        }
-                    )
-                else:
-                    normalized.append(item)
-            return normalized
-
         return value
 
     @model_validator(mode="after")
