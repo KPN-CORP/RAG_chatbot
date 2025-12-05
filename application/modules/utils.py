@@ -41,7 +41,23 @@ def extract_json_string(s) -> Optional[str]:
         # sanity check it’s valid JSON
         candidate_json = json.loads(candidate)
         
-        candidate_json['sources'] = [dict(t) for t in {tuple(d.items()) for d in candidate_json['sources']}]
+        sources = candidate_json.get("sources")
+        if not isinstance(sources, list):
+            sources = []
+
+        # Deduplicate source entries while tolerating empty/missing sources
+        unique_sources = []
+        seen = set()
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            marker = tuple(source.items())
+            if marker in seen:
+                continue
+            seen.add(marker)
+            unique_sources.append(source)
+
+        candidate_json["sources"] = unique_sources
         candidate_string = json.dumps(candidate_json)
         return candidate_string
     
