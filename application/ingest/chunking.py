@@ -559,6 +559,32 @@ def gemini_chunks_to_chunks(
     return converted
 
 
+def _gemini_chunks_to_text(gemini_chunks: Optional[List[Any]]) -> str:
+    """Flatten Gemini chunks into a narrative string for section detection.
+
+    Gemini pages already ship with chunk metadata, but the semantic/atomic
+    pipeline still needs a textual view of the page to keep section carry-over
+    working. This helper rehydrates a string representation without emitting any
+    duplicate chunks.
+    """
+
+    texts: List[str] = []
+    for chunk in gemini_chunks or []:
+        if isinstance(chunk, str):
+            candidate = chunk
+        elif isinstance(chunk, dict):
+            candidate = chunk.get("chunk_text") or chunk.get("text")
+        else:
+            candidate = None
+
+        if candidate:
+            candidate_str = str(candidate).strip()
+            if candidate_str:
+                texts.append(candidate_str)
+
+    return "\n".join(texts)
+
+
 # -----------------------------
 # Page-level builder (with section carry)
 # -----------------------------
@@ -591,6 +617,11 @@ def build_chunks_from_pages(
     for pg in pages_sorted:
         page_no = pg.get("page")
         gemini_chunks = pg.get("gemini_chunks")
+        page_had_gemini = bool(gemini_chunks)
+
+        # Always include Gemini chunks but still let the semantic/atomic pipeline
+        # inspect the page so section carry-over logic sees a continuous stream
+        # of content across pages.
         if gemini_chunks:
             built.extend(
                 gemini_chunks_to_chunks(
@@ -600,9 +631,13 @@ def build_chunks_from_pages(
                     page=page_no if page_no is not None else -1,
                 )
             )
-            # Gemini already emitted atomic chunks; skip legacy parsing paths.
-            continue
+
         nar = (pg.get("narrative_text") or "").strip()
+        if not nar and page_had_gemini:
+            # When Gemini supplied the only visible text on the page, synthesize
+            # a narrative string from its chunks so headers still reset
+            # section_carry for the following pages.
+            nar = _gemini_chunks_to_text(gemini_chunks)
         tables = pg.get("tables") or []
         lines_with_meta=pg.get("narrative_lines")
 
@@ -644,10 +679,19 @@ def build_chunks_from_pages(
                 breakpoint_threshold_type="percentile",
                 breakpoint_threshold_amount=95,
             )
-            built.extend(atomic_rules_to_chunks(rules, doc_id=doc_id, source=source, page=page_no))
+            if not page_had_gemini:
+                # Gemini already emitted chunks for this page; only emit manual
+                # chunks when Gemini did not run so we avoid duplicates while
+                # still updating section_carry.
+                built.extend(atomic_rules_to_chunks(rules, doc_id=doc_id, source=source, page=page_no))
 
         # 2) Tables → cell chunks
         for t in tables:
+            if page_had_gemini:
+                # Gemini provided the cell/narrative chunks already; skip
+                # legacy table chunking but keep moving so later pages see the
+                # updated section_carry if this page contained a header.
+                continue
             t_idx = t.get("table_index", 0)
             rows = t.get("table_dct")
             if isinstance(rows, dict) and "table_dct" in rows:
