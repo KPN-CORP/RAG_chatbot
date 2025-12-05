@@ -101,7 +101,9 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
     - Full-page framed definition/procedure boxes (1–2 columns, lots of text)
       are reclassified as narrative so their content is not lost to the table
       filter, but pages that include any true table will be routed through
-      Gemini first.
+      Gemini first. When ``use_gemini="use"``, this reclassification is skipped
+      so framed paragraph blocks still reach Gemini before the manual fallback
+      parser runs.
 
   - The Gemini extractor now guards against mixed text/JSON responses and
     normalizes string-only outputs so ingest can proceed even when the model
@@ -125,6 +127,10 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
     directly when present so you can feed Gemini output into Milvus without
     re-chunking. Each chunk is wrapped with the document/page metadata during
     ingest to preserve provenance for downstream RAG usage.
+
+  - Gemini-parsed pages still flow through the semantic/atomic page walker so
+    headers or topic boundaries on Gemini-only pages update the carry-over
+    context for subsequent pages.
 
   If a table contains complex multi-level headers that render poorly, you can
   render the page to an image and ask Gemini to re-extract the table JSON via

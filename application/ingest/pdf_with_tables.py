@@ -87,7 +87,15 @@ def _merge_floating_trailing_numbers(grouped_words: List[List[Dict[str, Any]]]) 
     return merged
 
 
-def get_page_elements(pdf_path):
+def get_page_elements(pdf_path, *, prefer_table_detection: bool = False):
+    """Return page dictionaries containing narrative text and table metadata.
+
+    When ``prefer_table_detection`` is ``True`` (set by ``extract_pdf_content``
+    when Gemini is in always-use mode), the heuristic that reclassifies framed
+    paragraph blocks as narrative text is skipped so ambiguous "tables" still
+    reach the Gemini extractor. Manual parsing remains available as a fallback
+    when Gemini fails.
+    """
     pdf_name = Path(pdf_path).name
     logger.info("Scanning PDF for tables and narrative", extra={"pdf": pdf_name})
     pages_output = []
@@ -258,29 +266,33 @@ def get_page_elements(pdf_path):
             # Reclassify paragraph-like and heading detections as narrative blocks
             # so we do not exclude their words from the text stream nor send them
             # to the complex table parser.
-            paragraph_table_indices = [
-                idx for idx, table in enumerate(tables) if _is_paragraph_like_table(table)
-            ]
-            heading_table_indices = [
-                idx for idx, table in enumerate(tables) if _is_heading_banner(table)
-            ]
-            full_page_text_table_indices = [
-                idx for idx, table in enumerate(tables) if _is_full_page_text_table(table)
-            ]
+            if not prefer_table_detection:
+                paragraph_table_indices = [
+                    idx for idx, table in enumerate(tables) if _is_paragraph_like_table(table)
+                ]
+                heading_table_indices = [
+                    idx for idx, table in enumerate(tables) if _is_heading_banner(table)
+                ]
+                full_page_text_table_indices = [
+                    idx
+                    for idx, table in enumerate(tables)
+                    if _is_full_page_text_table(table)
+                ]
 
-            indices_to_remove = (
-                set(paragraph_table_indices)
-                | set(heading_table_indices)
-                | set(full_page_text_table_indices)
-            )
+                indices_to_remove = (
+                    set(paragraph_table_indices)
+                    | set(heading_table_indices)
+                    | set(full_page_text_table_indices)
+                )
 
-            if indices_to_remove:
-                updated = _drop_tables(indices_to_remove)
-                if updated:
-                    tables, table_bboxes = updated
-                    tables = [
-                        {**table, "table_index": new_idx} for new_idx, table in enumerate(tables)
-                    ]
+                if indices_to_remove:
+                    updated = _drop_tables(indices_to_remove)
+                    if updated:
+                        tables, table_bboxes = updated
+                        tables = [
+                            {**table, "table_index": new_idx}
+                            for new_idx, table in enumerate(tables)
+                        ]
 
             words = page.extract_words(
                 x_tolerance=1.5,
@@ -402,7 +414,11 @@ def get_page_elements(pdf_path):
 
 
 def extract_pdf_content(file, use_gemini: str = "use"):
-    pdf_pages = get_page_elements(file)
+    # When Gemini is explicitly enabled, keep ambiguous framed text blocks so
+    # the vision model can decide whether they are true tables. Manual parsing
+    # still runs as a fallback if Gemini fails.
+    prefer_tables = (use_gemini or "").lower() == "use"
+    pdf_pages = get_page_elements(file, prefer_table_detection=prefer_tables)
     pdf_pages = check_and_fix_nested_tables(pdf_pages)
     # Gemini now runs for any page that contains at least one table so the
     # extractor can directly produce atomic cell + narrative chunks. The
