@@ -13,10 +13,19 @@ import os
 logger = get_logger(__name__)
 
 
-def extract_json_string(s: str) -> Optional[str]:
-    """Return a JSON string extracted from s, or None if not found/invalid."""
+def extract_json_string(s) -> Optional[str]:
+    """Return a JSON string extracted from ``s`` or ``None`` if not found/invalid."""
     if s is None:
         return None
+
+    # Gracefully handle non-text inputs (e.g., dict, list, structured messages)
+    if isinstance(s, bytes):
+        s = s.decode("utf-8", errors="ignore")
+    elif not isinstance(s, str):
+        try:
+            s = json.dumps(s, ensure_ascii=False)
+        except Exception:
+            s = str(s)
 
     m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", s, flags=re.IGNORECASE)
     if m:
