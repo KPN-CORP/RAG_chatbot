@@ -78,14 +78,12 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
 
    The service extracts tables and text using `ingest/pdf_with_tables.py`, generates Gemini embeddings, and stores chunks in Milvus. Duplicate chunks (same checksum) are skipped automatically.
 
-  - Tables with three-header rows **or nested tables inside cells** are treated
-    as *complex* and will automatically be re-extracted via the Gemini image
-    flow when a Gemini API key is configured. Simpler layouts continue to use
-    the built-in parser. One-column, paragraph-like detections are explicitly
-    left to the manual parser to avoid unnecessary Gemini calls. Gemini image
-    extraction is memoized per page so multiple complex tables on the same
-    page do not trigger repeated model calls. You can still call the helper
-    directly if you want to fine-tune the prompt:
+  - Any page that contains a table now triggers the Gemini image extractor so
+    the entire page is parsed into atomic chunk strings **and** narrative
+    chunks. Gemini is asked to output a simple JSON array of chunk strings so
+    no manual chunking step is needed. Extracted pages are memoized so
+    multiple tables on the same page do not trigger repeated model calls. You
+    can still call the helper directly if you want to fine-tune the prompt:
 
     - Single-row heading banners that only contain a title are reclassified as
       narrative text so they remain searchable even when `pdfplumber` reports
@@ -96,18 +94,43 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
       longer triggers the complex-table/Gemini path.
 
     - Two-column definition/procedure layouts with one skinny label column and
-      long-form descriptions in the other stay on the manual parser path. These
-      pages frequently look like deep headers but are semantically prose and no
-      longer invoke Gemini.
+      long-form descriptions in the other still stay on the manual parser path
+      when **no** table is detected, but once a table is present Gemini will
+      process the full page to keep headers connected to notes.
 
     - Full-page framed definition/procedure boxes (1–2 columns, lots of text)
       are reclassified as narrative so their content is not lost to the table
-      filter and will not be routed through the complex-table logic.
+      filter, but pages that include any true table will be routed through
+      Gemini first. When ``use_gemini="use"``, this reclassification is skipped
+      so framed paragraph blocks still reach Gemini before the manual fallback
+      parser runs.
 
-    - The Gemini extractor now guards against mixed text/JSON responses and
-      normalizes rows to the same list-of-dicts shape returned by the manual
-      parser so downstream chunking never breaks. Temporary images created via
-      `pdf2image` are cleaned up immediately after parsing.
+  - The Gemini extractor now guards against mixed text/JSON responses and
+    normalizes string-only outputs so ingest can proceed even when the model
+    omits table metadata. Temporary images created via `pdf2image` are cleaned
+    up immediately after parsing. Structured logs now include the PDF name and
+    page so you can trace which document a Gemini request belongs to while
+    debugging ingest runs.
+
+    - Blank table cells are coerced to empty strings instead of `null` so the
+      Pydantic schema accepts every cell chunk without validation failures.
+
+  - Control Gemini invocation with the `use_gemini` flag on
+    [`extract_pdf_content`](application/ingest/pdf_with_tables.py). Accepted
+    values are `"use"` (always call Gemini when a table is detected), `"skip"`
+    (force the legacy parsers), or `"fallback"` (only call Gemini for pages that
+    need it based on structure). The default is `"use"`, which keeps chunk
+    formats consistent between Gemini-produced chunks and those built from the
+    manual pipeline.
+
+  - Gemini now returns ready-made chunk strings. The ingest layer accepts these
+    directly when present so you can feed Gemini output into Milvus without
+    re-chunking. Each chunk is wrapped with the document/page metadata during
+    ingest to preserve provenance for downstream RAG usage.
+
+  - Gemini-parsed pages still flow through the semantic/atomic page walker so
+    headers or topic boundaries on Gemini-only pages update the carry-over
+    context for subsequent pages.
 
   If a table contains complex multi-level headers that render poorly, you can
   render the page to an image and ask Gemini to re-extract the table JSON via
@@ -121,14 +144,13 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
       pdf_path="/path/to/document.pdf",
       page_number=6,
       prompt=(
-          "Return the table as a JSON array of rows with every header column. "
-          "If headers span multiple rows, combine them with ' - ' (e.g., "
-          "'Allowance - Travel - Amount'). If a cell contains a nested table, "
-          "capture that subtable as multi-line text inside the cell value."
+          "You are an OCR + Vision-Language assistant used in a Retrieval-Augmented Generation (RAG) system.\n\n"
+         ........
       ),
       api_key="${GOOGLE_API_KEY}",
   )
-   # result["rows"] is validated by a Pydantic schema and ready to ingest
+   # result["rows"] and result["chunks"] are validated by a Pydantic schema and
+   # ready to ingest
    print(result["rows"])
    PY
    ```
@@ -169,6 +191,29 @@ The `application/` directory also contains utilities that can be invoked manuall
   ```
 
 Refer to the module docstrings for advanced usage.
+
+### Milvus collection schema
+
+Ingested chunks are stored in Milvus collections created by
+[`ingest/langchain_milvus_ingest.py`](application/ingest/langchain_milvus_ingest.py).
+The schema is intentionally small to keep ingestion fast while retaining rich
+metadata in a JSON field:
+
+- `id` (`VARCHAR`, primary key, max length 128): chunk identifier (`doc_id` +
+  positional suffix).
+- `embedding` (`FLOAT_VECTOR`): Gemini embedding for the chunk text.
+- `checksum` (`VARCHAR`, max length 128): deduplication key used to skip chunks
+  already present in the collection.
+- `text` (`VARCHAR`, max length 65535): raw chunk text used for hybrid search
+  and debugging.
+- `metadata` (`JSON`): structured attributes such as `source`, `page`,
+  `element_type`, `table_id`/`row_id`/`list_id`, `breadcrumb`, and any Q&A
+  fields. The ingestion step strips `chunk_text`/`text` from this blob to avoid
+  duplication while preserving identifiers and breadcrumbs for result displays.
+
+Collections inherit the description from `config.collection_description` and use
+an HNSW/COSINE index by default. You can override the collection name, host, or
+port in your config module before running ingestion.
 
 ## 6. Folder watcher for automatic Milvus sync
 
