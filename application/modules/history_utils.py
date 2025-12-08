@@ -1,5 +1,7 @@
 """Utilities for normalising chat history structures before LLM calls."""
 
+from __future__ import annotations
+
 import json
 from typing import Iterable, List, Sequence
 

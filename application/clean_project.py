@@ -20,6 +20,8 @@ Other handy entry points::
 
 from __future__ import annotations
 
+from __future__ import annotations
+
 import argparse
 import importlib.util
 import os
