@@ -19,6 +19,12 @@ def _history_key(session_id: str) -> str:
     return f"session:{session_id}:history"
 
 
+def _meta_key(session_id: str) -> str:
+    """Return the Redis session metadata key for *session_id*."""
+
+    return f"session:{session_id}:meta"
+
+
 def append_history_item(
     redis_client: redis.Redis,
     session_ttl_seconds: int,
@@ -35,6 +41,9 @@ def append_history_item(
     payload = json.dumps(item)
     redis_client.rpush(_history_key(session_id), payload)
     redis_client.expire(_history_key(session_id), session_ttl_seconds)
+    # Refresh the session metadata TTL as well so active sessions are not
+    # mistakenly treated as expired when only the meta key has lapsed.
+    redis_client.expire(_meta_key(session_id), session_ttl_seconds)
     logger.debug(
         "Appended history item",
         extra={
@@ -63,7 +72,21 @@ def load_recent_history(
 def session_exists(redis_client: redis.Redis, session_id: str) -> bool:
     """Check whether a chat session already exists in Redis."""
 
-    return redis_client.exists(f"session:{session_id}:meta") == 1
+    # Prefer the metadata key, but treat the history key as valid too so
+    # sessions with expired meta (but active history) are still recognized.
+    return redis_client.exists(_meta_key(session_id)) == 1 or redis_client.exists(
+        _history_key(session_id)
+    )
+
+
+def refresh_session_ttl(
+    redis_client: redis.Redis, session_id: str, session_ttl_seconds: int
+) -> None:
+    """Refresh TTLs for all session keys if a positive TTL is configured."""
+
+    if session_ttl_seconds and session_ttl_seconds > 0:
+        redis_client.expire(_meta_key(session_id), session_ttl_seconds)
+        redis_client.expire(_history_key(session_id), session_ttl_seconds)
 
 
 class RedisConversationMemory:
@@ -163,6 +186,7 @@ __all__ = [
     "RedisConversationMemory",
     "append_history_item",
     "build_redis_client",
+    "refresh_session_ttl",
     "load_recent_history",
     "session_exists",
 ]

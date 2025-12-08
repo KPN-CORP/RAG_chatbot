@@ -24,7 +24,12 @@ from langchain_core.runnables import RunnableLambda
 from langchain_google_genai import ChatGoogleGenerativeAI
 from logging_config import configure_logging, get_logger
 from modules.history_utils import build_chat_history_messages
-from modules.redis import RedisConversationMemory, build_redis_client
+from modules.redis import (
+    RedisConversationMemory,
+    build_redis_client,
+    refresh_session_ttl,
+    session_exists,
+)
 from schemas.api import ChatReq, ChatResp, CreateSessionResp
 from schemas.rag_outputs import AnswerWithSources, format_docs_with_metadata
 from vectorstore.milvus_vectorstore import get_vectorstore
@@ -75,10 +80,13 @@ def _session_meta_key(sid: str) -> str:
     return f"session:{sid}:meta"
 
 
-def session_exists_for_client(redis_client, sid: str) -> bool:
-    """Check whether a chat session already exists in Redis for this profile."""
+def session_exists_for_client(redis_client, sid: str, session_ttl_seconds: int) -> bool:
+    """Check whether a chat session exists and keep it alive if it does."""
 
-    return redis_client.exists(_session_meta_key(sid)) == 1
+    exists = session_exists(redis_client, sid)
+    if exists:
+        refresh_session_ttl(redis_client, sid, session_ttl_seconds)
+    return exists
 
 def _expected_ingest_token() -> str:
     """Return the configured ingestion upload token from the environment."""
@@ -290,6 +298,7 @@ def chat(req: ChatReq, profile: str = ""):
     config = get_runtime_config(profile)  # empty profile → application/config.py
     redis_client = get_redis_for_config(config)
     vectorstore = get_vectorstore(config)
+    session_ttl = _parse_ttl(config.SESSION_TTL_SECONDS)
 
     logger.info(
         "Received chat request",
@@ -299,7 +308,7 @@ def chat(req: ChatReq, profile: str = ""):
     if not vectorstore:
         logger.error("Vectorstore is not initialised")
         raise HTTPException(status_code=500, detail="Vectorstore not wired in server.")
-    if not session_exists_for_client(redis_client, req.session_id):
+    if not session_exists_for_client(redis_client, req.session_id, session_ttl):
         logger.warning(
             "Chat request for unknown session", extra={"session_id": req.session_id}
         )
@@ -309,7 +318,7 @@ def chat(req: ChatReq, profile: str = ""):
         session_id=req.session_id,
         redis_client=redis_client,
         max_messages=config.MAX_HISTORY_MESSAGES,
-        session_ttl_seconds=config.SESSION_TTL_SECONDS,
+        session_ttl_seconds=session_ttl or 0,
     )
 
     raw_history = mem.get_chat_history_pairs()  # whatever your Redis class returns
