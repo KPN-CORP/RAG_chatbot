@@ -123,6 +123,53 @@ def get_page_elements(pdf_path, *, prefer_table_detection: bool = False):
                         grid = build_cell_border_grid_from_cells_only(page, t)
                 except Exception:
                     grid = None
+
+                def _fill_missing_cells_from_grid(table_rows, table_grid, page_words):
+                    """Fill empty cells using the detected grid and raw page words.
+
+                    pdfplumber occasionally returns ``None`` for cells that span
+                    multiple columns or sit on top of colored headers. When we
+                    still have a usable grid, populate those gaps by collecting
+                    all words that fall inside each cell's bbox.
+                    """
+
+                    if not table_rows or not table_grid or not page_words:
+                        return table_rows
+
+                    n_rows = max(table_grid.get("n_rows", 0), len(table_rows))
+                    n_cols = max(table_grid.get("n_cols", 0), max(len(r or []) for r in table_rows))
+
+                    normalized_rows = [list(row or []) for row in table_rows]
+                    for _ in range(len(normalized_rows), n_rows):
+                        normalized_rows.append([None] * n_cols)
+                    for r in range(len(normalized_rows)):
+                        if len(normalized_rows[r]) < n_cols:
+                            normalized_rows[r].extend([None] * (n_cols - len(normalized_rows[r])))
+
+                    def _word_in_cell(word, cell_bbox, pad: float = 0.75) -> bool:
+                        x0, top, x1, bottom = cell_bbox
+                        return (
+                            (x0 - pad) <= float(word.get("x0", 0.0)) <= (x1 + pad)
+                            and (top - pad) <= float(word.get("top", 0.0)) <= (bottom + pad)
+                        )
+
+                    for cell in table_grid.get("cells", []):
+                        r, c = int(cell.get("row", -1)), int(cell.get("col", -1))
+                        if r < 0 or c < 0 or r >= len(normalized_rows) or c >= len(normalized_rows[r]):
+                            continue
+                        if normalized_rows[r][c] not in (None, ""):
+                            continue
+                        texts = [
+                            w.get("text", "")
+                            for w in page_words
+                            if _word_in_cell(w, cell.get("bbox", (0, 0, 0, 0)))
+                        ]
+                        merged = " ".join(t for t in texts if t).strip()
+                        if merged:
+                            normalized_rows[r][c] = merged
+
+                    return normalized_rows
+
                 tables.append(
                     {
                         "table_index": t_idx,
@@ -389,7 +436,11 @@ def get_page_elements(pdf_path, *, prefer_table_detection: bool = False):
             table_records = []
             for t in tables:
                 if t["rows"]:
-                    table_dct = t["rows"]
+                    table_dct = _fill_missing_cells_from_grid(
+                        t["rows"],
+                        t.get("grid"),
+                        words,
+                    )
                 else:
                     table_dct = None
                 table_records.append(
