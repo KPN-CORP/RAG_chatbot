@@ -96,3 +96,12 @@ CONTEXTUALIZE_QUESTION_PROMPT = ChatPromptTemplate.from_messages(
         ),
     ]
 )
+
+BUSINESS_UNITS = [
+    "KPN Corporation",
+    "Cement",
+    "Downstream",
+    "Plantations",
+    "Property",
+    "KPN Sugar"
+]

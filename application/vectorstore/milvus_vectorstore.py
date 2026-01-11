@@ -34,7 +34,7 @@ def _resolve_api_key(google_api_key_name: str, explicit_key: Optional[str]) -> O
 
 @lru_cache(maxsize=None)
 def _build_vectorstore(
-    config_module_name: str,
+    # config_module_name: str,
     collection_name: str,
     milvus_host: str,
     milvus_port: str,
@@ -89,7 +89,7 @@ def get_vectorstore(config) -> Milvus:
     """Initialise and return the Milvus vector store for the provided config."""
 
     return _build_vectorstore(
-        config.__name__,
+        # config.__name__,
         config.collection_name,
         config.milvus_host,
         str(config.milvus_port),
