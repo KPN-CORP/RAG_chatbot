@@ -17,7 +17,7 @@ import os
 import threading
 import time
 from types import ModuleType
-from typing import Dict, Iterable
+from typing import Dict, Iterable, Optional
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -90,6 +90,22 @@ def should_index(path: str) -> bool:
     return ext in VALID_EXTS
 
 
+def _resolve_collection_for_path(path: str) -> str:
+    """Return the Milvus collection name for the file, based on subfolders."""
+
+    if not CURRENT_CONFIG:
+        raise RuntimeError("Watcher config not loaded before resolving collection name.")
+    base_collection = CURRENT_CONFIG.collection_name
+    relative_path = os.path.relpath(path, WATCH_DIR)
+    if relative_path.startswith(".."):
+        return base_collection
+    parts = relative_path.split(os.sep)
+    subfolder = parts[0] if len(parts) > 1 else ""
+    if not subfolder:
+        return base_collection
+    return f"{base_collection}_{subfolder}"
+
+
 def mark_dirty(path: str) -> None:
     """Remember a changed file so the debounce worker can process it later."""
 
@@ -122,15 +138,25 @@ class DocsEventHandler(FileSystemEventHandler):
     def on_deleted(self, event):
         if event.is_directory or not should_index(event.src_path):
             return
+        collection_name = _resolve_collection_for_path(event.src_path)
         logger.info("File deleted", extra={"path": event.src_path})
-        delete_file_from_milvus(event.src_path, config=CURRENT_CONFIG)
+        delete_file_from_milvus(
+            event.src_path,
+            config=CURRENT_CONFIG,
+            collection_name=collection_name,
+        )
 
     def on_moved(self, event):
         if event.is_directory:
             return
         if should_index(event.src_path):
+            collection_name = _resolve_collection_for_path(event.src_path)
             logger.info("File moved (old)", extra={"path": event.src_path})
-            delete_file_from_milvus(event.src_path, config=CURRENT_CONFIG)
+            delete_file_from_milvus(
+                event.src_path,
+                config=CURRENT_CONFIG,
+                collection_name=collection_name,
+            )
         if should_index(event.dest_path):
             logger.info("File moved (new)", extra={"path": event.dest_path})
             mark_dirty(event.dest_path)
@@ -141,8 +167,13 @@ def _process_pending_updates(to_process: Iterable[str]) -> None:
 
     for path in to_process:
         if os.path.exists(path):
+            collection_name = _resolve_collection_for_path(path)
             logger.info("Processing file after debounce", extra={"path": path})
-            upsert_file_to_milvus(path, config=CURRENT_CONFIG)
+            upsert_file_to_milvus(
+                path,
+                config=CURRENT_CONFIG,
+                collection_name=collection_name,
+            )
         else:
             # File vanished between event and worker
             logger.info("Skipping missing file", extra={"path": path})
@@ -184,7 +215,12 @@ def run_watcher(profile: str = ""):
 
     logger.info(
         "Watching for changes",
-        extra={"path": WATCH_DIR, "profile": profile or "default", "collection": config.collection_name},
+        extra={
+            "path": WATCH_DIR,
+            "profile": profile or "default",
+            "collection": config.collection_name,
+            "recursive": True,
+        },
     )
     try:
         while True:
