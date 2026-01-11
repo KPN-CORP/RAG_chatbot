@@ -40,7 +40,7 @@ This repository contains experimentation notebooks and a production-ready FastAP
 
    The service exposes the following key endpoints:
    - `POST /session` – create a new Redis-backed chat session.
-   - `POST /chat` – run the RAG pipeline for a question.
+   - `POST /ask` – run the RAG pipeline for a question.
    - `POST /ingest/upload` – add a PDF to Milvus for retrieval.
 
 3. Confirm the server is running by visiting the interactive docs: `http://localhost:8000/docs`.
@@ -48,6 +48,8 @@ This repository contains experimentation notebooks and a production-ready FastAP
 ### Profiles and config selection
 
 - All chatbot endpoints accept an optional `profile` query/header parameter (for example, `POST /ask?profile=IRIS`). Leaving it empty keeps the legacy default behaviour and loads `application/config.py`.
+- `POST /ask` and `POST /ingest/upload` accept an optional `business_unit` query parameter to scope reads/writes to the corresponding `"{collection_name}_{business_unit}"` Milvus collection.
+- Valid values for `business_unit` are defined in `BUSINESS_UNITS` inside `application/config.py`.
 - A profile name picks up a matching config module named `config_{PROFILE}.py` (e.g., `config_IRIS.py`). Missing profiles log a warning and fall back to the default config so existing integrations keep working.
 - The `IRIS` profile returns a slimmed down chat payload (`{"answer": ..., "not_found": ...}`) without the `sources` key, while other profiles continue returning `sources` alongside the answer.
 - To add a new persona/configuration, drop a file like `application/config_FOOBOT.py` alongside the existing config files using the same variable names.
@@ -71,7 +73,7 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
 2. **Ingest a PDF** (optional but recommended before asking questions)
 
    ```bash
-   curl -X POST "http://localhost:8000/ingest/upload" \
+   curl -X POST "http://localhost:8000/ingest/upload?business_unit=Plantations" \
      -H "X-Ingest-Token: $INGEST_UPLOAD_TOKEN" \
      -F "file=@/path/to/document.pdf"
    ```
@@ -158,7 +160,7 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
 3. **Ask a question**
 
    ```bash
-   curl -X POST http://localhost:8000/chat \
+   curl -X POST "http://localhost:8000/ask?business_unit=Plantations" \
      -H "Content-Type: application/json" \
      -d '{
        "session_id": "<uuid-from-session-endpoint>",
@@ -181,6 +183,7 @@ The `application/` directory also contains utilities that can be invoked manuall
 - `modules/redis.py` – helper for managing Redis conversation memory.
 - `vectorstore/milvus_vectorstore.py` – wrapper to instantiate the Milvus vector store via LangChain.
 - `milvus_inspector.py` – CLI helper to list Milvus collections and preview the ingested document sources/chunks. For example:
+- `modules/watcher.py` – folder watcher that mirrors files into Milvus; when files live in subfolders of `WATCH_DIR`, their vectors are written to `{collection_name}_{subfolder}` collections.
 
   ```bash
   # Inspect every available collection using the default config

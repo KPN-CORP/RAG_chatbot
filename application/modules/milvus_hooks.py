@@ -67,43 +67,55 @@ def _log_current_documents(collection: Collection, *, sample_limit: int = 10) ->
     )
 
 
-def delete_file_from_milvus(file_path: str, *, config=None) -> None:
+def delete_file_from_milvus(
+    file_path: str,
+    *,
+    config=None,
+    collection_name: str | None = None,
+) -> None:
     """Delete all vectors associated with ``file_path`` from Milvus."""
 
     config = config or load_config()
+    collection = collection_name or config.collection_name
     source_name = Path(file_path).name
 
     _connect_to_milvus(config)
-    if not utility.has_collection(config.collection_name):
+    if not utility.has_collection(collection):
         logger.info(
             "Milvus collection missing; skipping delete",
-            extra={"collection": config.collection_name, "file": source_name},
+            extra={"collection": collection, "file": source_name},
         )
         return
 
-    collection = Collection(config.collection_name)
-    collection.load()
+    milvus_collection = Collection(collection)
+    milvus_collection.load()
     expr = f'metadata["{SOURCE_METADATA_KEY}"] == "{source_name}"'
     try:
-        result = collection.delete(expr)
+        result = milvus_collection.delete(expr)
         logger.info(
             "Deleted vectors for file",
             extra={
                 "file": source_name,
+                "collection": collection,
                 "deleted_count": getattr(result, "delete_count", getattr(result, "delete_cnt", None)),
             },
         )
     except Exception as exc:  # pragma: no cover - defensive logging aid
         logger.warning(
             "Failed to delete vectors for file",
-            extra={"file": source_name, "error": str(exc)},
+            extra={"file": source_name, "collection": collection, "error": str(exc)},
         )
         return
 
-    _log_current_documents(collection)
+    _log_current_documents(milvus_collection)
 
 
-def upsert_file_to_milvus(file_path: str, *, config=None) -> None:
+def upsert_file_to_milvus(
+    file_path: str,
+    *,
+    config=None,
+    collection_name: str | None = None,
+) -> None:
     """
     This is where you should:
       1) Delete old vectors for this file
@@ -111,6 +123,7 @@ def upsert_file_to_milvus(file_path: str, *, config=None) -> None:
     """
 
     config = config or load_config()
+    collection = collection_name or config.collection_name
     path = Path(file_path)
     ext = path.suffix.lower()
     if not path.exists():
@@ -121,11 +134,11 @@ def upsert_file_to_milvus(file_path: str, *, config=None) -> None:
     doc_id = _build_document_identifier(path.name or "document", data)
     logger.info(
         "Preparing Milvus upsert",
-        extra={"file": str(path), "doc_id": doc_id, "ext": ext},
+        extra={"file": str(path), "doc_id": doc_id, "ext": ext, "collection": collection},
     )
 
     # Step 1: remove previous vectors for this source so updates stay in sync.
-    delete_file_from_milvus(file_path, config=config)
+    delete_file_from_milvus(file_path, config=config, collection_name=collection)
 
     # Step 2: insert new vectors using the existing ingestion pipeline.
     try:
@@ -135,7 +148,7 @@ def upsert_file_to_milvus(file_path: str, *, config=None) -> None:
                 pages=pages,
                 doc_id=doc_id,
                 source=path.name,
-                collection_name=config.collection_name,
+                collection_name=collection,
                 config=config,
                 milvus_host=config.milvus_host,
                 milvus_port=config.milvus_port,
@@ -147,7 +160,7 @@ def upsert_file_to_milvus(file_path: str, *, config=None) -> None:
                 text=text_content,
                 doc_id=doc_id,
                 source=path.name,
-                collection_name=config.collection_name,
+                collection_name=collection,
                 config=config,
                 collection_description=config.collection_description,
                 milvus_host=config.milvus_host,
@@ -168,14 +181,19 @@ def upsert_file_to_milvus(file_path: str, *, config=None) -> None:
 
     logger.info(
         "Upsert complete",
-        extra={"file": str(path), "inserted": inserted, "skipped": skipped},
+        extra={
+            "file": str(path),
+            "inserted": inserted,
+            "skipped": skipped,
+            "collection": collection,
+        },
     )
 
     # Log a quick snapshot of the knowledge base after the update.
     _connect_to_milvus(config)
-    collection = Collection(config.collection_name)
-    collection.load()
-    _log_current_documents(collection)
+    milvus_collection = Collection(collection)
+    milvus_collection.load()
+    _log_current_documents(milvus_collection)
 
 
 __all__ = ["upsert_file_to_milvus", "delete_file_from_milvus", "SOURCE_METADATA_KEY"]
