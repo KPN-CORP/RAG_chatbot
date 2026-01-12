@@ -85,6 +85,20 @@ def _build_document_identifier(filename: str, data: bytes) -> str:
     digest = hashlib.sha256(data).hexdigest()[:16]
     return f"{safe_name or 'document'}-{digest}"
 
+
+def sanitize_collection_component(value: str) -> str:
+    """Return a Milvus-safe collection suffix from user or folder input."""
+
+    if value is None:
+        return ""
+    cleaned = value.strip()
+    if not cleaned:
+        return ""
+    normalized = re.sub(r"\s+", "_", cleaned)
+    normalized = re.sub(r"[^0-9A-Za-z_]", "_", normalized)
+    normalized = re.sub(r"_+", "_", normalized)
+    return normalized.strip("_")
+
 def unwrap_meta(meta: dict) -> dict:
     # Flatten one level of nested 'metadata'
     inner = (meta or {}).get("metadata") or {}

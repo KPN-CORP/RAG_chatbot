@@ -9,8 +9,15 @@ import json
 import redis
 from functools import lru_cache
 from typing import Optional
+from config import BUSINESS_UNITS
 from config_loader import load_config
-from modules.utils import extract_json_string, meta_filename, meta_page, _build_document_identifier
+from modules.utils import (
+    extract_json_string,
+    meta_filename,
+    meta_page,
+    _build_document_identifier,
+    sanitize_collection_component,
+)
 
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from ingest.langchain_milvus_ingest import ingest_pages_to_milvus, ingest_text_document
@@ -112,8 +119,22 @@ def _parse_ttl(value) -> Optional[int]:
         return None
 
 
+def _resolve_collection_name(config, business_unit: Optional[str]) -> str:
+    """Return the Milvus collection name for the request, optionally scoped by unit."""
+
+    if not business_unit:
+        return config.collection_name
+    if business_unit not in BUSINESS_UNITS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"business_unit must be one of: {', '.join(BUSINESS_UNITS)}",
+        )
+    suffix = sanitize_collection_component(business_unit)
+    return f"{config.collection_name}_{suffix}" if suffix else config.collection_name
+
+
 def _ingest_pdf_upload(
-    *, data: bytes, upload: UploadFile, doc_id: str, config
+    *, data: bytes, upload: UploadFile, doc_id: str, config, collection_name: str
 ) -> tuple[int, int]:
     """Persist PDF upload to disk, extract pages, and push them to Milvus."""
 
@@ -143,7 +164,7 @@ def _ingest_pdf_upload(
             pages=pages,
             doc_id=doc_id,
             source=upload.filename or doc_id,
-            collection_name=config.collection_name,
+            collection_name=collection_name,
             config=config,
             milvus_host=config.milvus_host,
             milvus_port=config.milvus_port,
@@ -158,7 +179,7 @@ def _ingest_pdf_upload(
 
 
 def _ingest_text_upload(
-    *, data: bytes, upload: UploadFile, doc_id: str, config
+    *, data: bytes, upload: UploadFile, doc_id: str, config, collection_name: str
 ) -> tuple[int, int]:
     """Decode TXT uploads (with fallback) and ingest their contents."""
 
@@ -185,7 +206,7 @@ def _ingest_text_upload(
             text=text_content,
             doc_id=doc_id,
             source=upload.filename or doc_id,
-            collection_name=config.collection_name,
+            collection_name=collection_name,
             config=config,
             collection_description=config.collection_description,
             milvus_host=config.milvus_host,
@@ -232,10 +253,15 @@ async def upload_document(
     file: UploadFile = File(...),
     ingest_token: str = Header(..., alias="X-Ingest-Token"),
     profile: str = "",
+    business_unit: Optional[str] = None,
 ):
-    """Ingest a user-provided PDF or TXT document into the Milvus knowledge base."""
+    """Ingest a user-provided PDF or TXT document into the Milvus knowledge base.
+
+    Optionally scopes ingestion to a business-unit-specific Milvus collection.
+    """
 
     config = get_runtime_config(profile)  # empty profile → application/config.py
+    collection_name = _resolve_collection_name(config, business_unit)
     expected_token = _expected_ingest_token()
     if not expected_token:
         logger.error("Missing ingestion token configuration")
@@ -254,7 +280,11 @@ async def upload_document(
     doc_id = _build_document_identifier(file.filename or "document.pdf", data)
     logger.info(
         "Received document upload",
-        extra={"upload_filename": file.filename, "content_type": file.content_type}
+        extra={
+            "upload_filename": file.filename,
+            "content_type": file.content_type,
+            "business_unit": business_unit,
+        }
     )
 
     filename_lower = (file.filename or "").lower()
@@ -267,11 +297,19 @@ async def upload_document(
 
     if is_pdf_upload:
         skipped, inserted = _ingest_pdf_upload(
-            data=data, upload=file, doc_id=doc_id, config=config
+            data=data,
+            upload=file,
+            doc_id=doc_id,
+            config=config,
+            collection_name=collection_name,
         )
     else:
         skipped, inserted = _ingest_text_upload(
-            data=data, upload=file, doc_id=doc_id, config=config
+            data=data,
+            upload=file,
+            doc_id=doc_id,
+            config=config,
+            collection_name=collection_name,
         )
 
     logger.info(
@@ -297,7 +335,8 @@ def chat(req: ChatReq, profile: str = ""):
     """Answer a user question using the retrieval augmented generation chain."""
     config = get_runtime_config(profile)  # empty profile → application/config.py
     redis_client = get_redis_for_config(config)
-    vectorstore = get_vectorstore(config)
+    collection_name = _resolve_collection_name(config, req.business_unit)
+    vectorstore = get_vectorstore(config, collection_name=collection_name)
     session_ttl = _parse_ttl(config.SESSION_TTL_SECONDS)
 
     logger.info(
