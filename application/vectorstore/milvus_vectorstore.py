@@ -85,11 +85,12 @@ def _build_vectorstore(
         raise
 
 
-def get_vectorstore(config, *, collection_name: Optional[str] = None) -> Milvus:
+def get_vectorstore(config) -> Milvus:
     """Initialise and return the Milvus vector store for the provided config."""
 
     return _build_vectorstore(
-        collection_name or config.collection_name,
+        # config.__name__,
+        config.collection_name,
         config.milvus_host,
         str(config.milvus_port),
         config.embedding_model_name,
