@@ -135,7 +135,14 @@ def upsert_file_to_milvus(
     )
 
     # Mark the job as in-flight before touching Milvus.
-    update_kb_status(str(path), status="processing", config=config)
+    try:
+        update_kb_status(str(path), status="processing", config=config)
+    except Exception as exc:  # pragma: no cover - defensive logging aid
+        logger.exception(
+            "Failed to update processing status to the database",
+            extra={"file": str(path), "doc_id": doc_id, "ext": ext, "error": str(exc)},
+        )
+        
 
     # Step 1: remove previous vectors for this source so updates stay in sync.
     delete_file_from_milvus(file_path, config=config, collection_name=collection)
@@ -190,7 +197,13 @@ def upsert_file_to_milvus(
     )
 
     # Mark the job as done after the Milvus upsert succeeds.
-    update_kb_status(str(path), status="done", config=config)
+    try:
+        update_kb_status(str(path), status="done", config=config)
+    except Exception as exc:  # pragma: no cover - defensive logging aid
+        logger.exception(
+            "Failed to update done status the database",
+            extra={"file": str(path), "doc_id": doc_id, "ext": ext, "error": str(exc)},
+        )
 
     # Log a quick snapshot of the knowledge base after the update.
     _connect_to_milvus(config)
