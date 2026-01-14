@@ -30,6 +30,7 @@ google_api_key_name = "GEMINI_API_KEY"  # environment variable name for Gemini/G
 
 WATCH_DIR = r"/home/hcispanel/public_html/chatbot-nastari/storage/app/pdf-file/"  # change this
 VALID_EXTS = {".pdf", ".docx", ".txt"}  # adapt to your project
+KB_DB_TABLE = "kb_documents"
 
 def _escape_prompt_braces(prompt: str, *, allow: set[str]) -> str:
     """Escape all braces except those explicitly allowed as template vars."""
