@@ -30,11 +30,14 @@ class ChatReq(BaseModel):
         """Ensure the business unit matches the configured list."""
         if value is None:
             return value
-        if value not in BUSINESS_UNITS:
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if cleaned not in BUSINESS_UNITS:
             raise ValueError(
                 f"business_unit must be one of: {', '.join(BUSINESS_UNITS)}"
             )
-        return value
+        return cleaned
 
 
 class ChatResp(BaseModel):

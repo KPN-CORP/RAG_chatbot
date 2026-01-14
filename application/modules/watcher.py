@@ -25,6 +25,7 @@ from watchdog.observers import Observer
 from config_loader import load_config
 from logging_config import get_logger
 from modules.milvus_hooks import delete_file_from_milvus, upsert_file_to_milvus
+from modules.utils import sanitize_collection_component
 
 logger = get_logger(__name__)
 
@@ -103,7 +104,8 @@ def _resolve_collection_for_path(path: str) -> str:
     subfolder = parts[0] if len(parts) > 1 else ""
     if not subfolder:
         return base_collection
-    return f"{base_collection}_{subfolder}"
+    suffix = sanitize_collection_component(subfolder)
+    return f"{base_collection}_{suffix}" if suffix else base_collection
 
 
 def mark_dirty(path: str) -> None:

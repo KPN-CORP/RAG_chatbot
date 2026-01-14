@@ -48,7 +48,7 @@ This repository contains experimentation notebooks and a production-ready FastAP
 ### Profiles and config selection
 
 - All chatbot endpoints accept an optional `profile` query/header parameter (for example, `POST /ask?profile=IRIS`). Leaving it empty keeps the legacy default behaviour and loads `application/config.py`.
-- `POST /ask` and `POST /ingest/upload` accept an optional `business_unit` query parameter to scope reads/writes to the corresponding `"{collection_name}_{business_unit}"` Milvus collection.
+- `POST /ask` and `POST /ingest/upload` accept an optional `business_unit` query parameter to scope reads/writes to the corresponding `"{collection_name}_{business_unit}"` Milvus collection. Spaces or punctuation in the business unit are normalized to underscores for Milvus-safe collection names.
 - Valid values for `business_unit` are defined in `BUSINESS_UNITS` inside `application/config.py`.
 - A profile name picks up a matching config module named `config_{PROFILE}.py` (e.g., `config_IRIS.py`). Missing profiles log a warning and fall back to the default config so existing integrations keep working.
 - The `IRIS` profile returns a slimmed down chat payload (`{"answer": ..., "not_found": ...}`) without the `sources` key, while other profiles continue returning `sources` alongside the answer.
@@ -183,7 +183,7 @@ The `application/` directory also contains utilities that can be invoked manuall
 - `modules/redis.py` – helper for managing Redis conversation memory.
 - `vectorstore/milvus_vectorstore.py` – wrapper to instantiate the Milvus vector store via LangChain.
 - `milvus_inspector.py` – CLI helper to list Milvus collections and preview the ingested document sources/chunks. For example:
-- `modules/watcher.py` – folder watcher that mirrors files into Milvus; when files live in subfolders of `WATCH_DIR`, their vectors are written to `{collection_name}_{subfolder}` collections.
+- `modules/watcher.py` – folder watcher that mirrors files into Milvus; when files live in subfolders of `WATCH_DIR`, their vectors are written to `{collection_name}_{subfolder}` collections (subfolder names are normalized to Milvus-safe suffixes).
 
   ```bash
   # Inspect every available collection using the default config

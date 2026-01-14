@@ -11,7 +11,13 @@ from functools import lru_cache
 from typing import Optional
 from config import BUSINESS_UNITS
 from config_loader import load_config
-from modules.utils import extract_json_string, meta_filename, meta_page, _build_document_identifier
+from modules.utils import (
+    extract_json_string,
+    meta_filename,
+    meta_page,
+    _build_document_identifier,
+    sanitize_collection_component,
+)
 
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from ingest.langchain_milvus_ingest import ingest_pages_to_milvus, ingest_text_document
@@ -123,7 +129,8 @@ def _resolve_collection_name(config, business_unit: Optional[str]) -> str:
             status_code=400,
             detail=f"business_unit must be one of: {', '.join(BUSINESS_UNITS)}",
         )
-    return f"{config.collection_name}_{business_unit}"
+    suffix = sanitize_collection_component(business_unit)
+    return f"{config.collection_name}_{suffix}" if suffix else config.collection_name
 
 
 def _ingest_pdf_upload(
