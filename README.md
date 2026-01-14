@@ -225,12 +225,16 @@ The watcher under [`application/modules/watcher.py`](application/modules/watcher
 
 - detect file system changes (create/modify/delete/move) for supported extensions in `VALID_EXTS`;
 - call two hook functions, `upsert_file_to_milvus(file_path)` and `delete_file_from_milvus(file_path)`, to keep Milvus in sync.
+- update the status column in the table named by `KB_DB_TABLE` when a document begins processing (`processing`) and finishes (`done`), using the subfolder name as the `business_unit` lookup when available.
 
 The hooks now live in [`application/modules/milvus_hooks.py`](application/modules/milvus_hooks.py) so you can swap them out or
 adjust their metadata filter (via `SOURCE_METADATA_KEY`) if your Milvus schema differs from the default defined in
 `ingest/langchain_milvus_ingest.py`. They reuse the existing ingestion pipeline (`ingest_pages_to_milvus` and
 `ingest_text_document`) and log which sources currently exist in the knowledge base after each update, making it easy to
 verify what documents are indexed.
+
+To enable status updates, set `KB_DATABASE_URL` in your environment (for example in a `.env` file) alongside the configured
+`KB_DB_TABLE` value in `application/config.py`.
 
 Run the watcher from the `application/` directory. You can pass `--profile` to
 target a specific chatbot configuration (for example `config_IRIS.py`):
