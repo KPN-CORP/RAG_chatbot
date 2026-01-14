@@ -16,6 +16,7 @@ from config_loader import load_config
 from ingest.langchain_milvus_ingest import ingest_pages_to_milvus, ingest_text_document
 from ingest.pdf_with_tables import extract_pdf_content
 from logging_config import get_logger
+from modules.kb_status import update_kb_status
 from modules.utils import _build_document_identifier
 from pymilvus import Collection, connections, utility
 
@@ -116,11 +117,7 @@ def upsert_file_to_milvus(
     config=None,
     collection_name: str | None = None,
 ) -> None:
-    """
-    This is where you should:
-      1) Delete old vectors for this file
-      2) Insert new vectors for this file
-    """
+    """Upsert a file into Milvus and mirror its job status in the KB database."""
 
     config = config or load_config()
     collection = collection_name or config.collection_name
@@ -136,6 +133,9 @@ def upsert_file_to_milvus(
         "Preparing Milvus upsert",
         extra={"file": str(path), "doc_id": doc_id, "ext": ext, "collection": collection},
     )
+
+    # Mark the job as in-flight before touching Milvus.
+    update_kb_status(str(path), status="processing", config=config)
 
     # Step 1: remove previous vectors for this source so updates stay in sync.
     delete_file_from_milvus(file_path, config=config, collection_name=collection)
@@ -188,6 +188,9 @@ def upsert_file_to_milvus(
             "collection": collection,
         },
     )
+
+    # Mark the job as done after the Milvus upsert succeeds.
+    update_kb_status(str(path), status="done", config=config)
 
     # Log a quick snapshot of the knowledge base after the update.
     _connect_to_milvus(config)
