@@ -110,6 +110,7 @@ def delete_file_from_milvus(
             "Failed to delete vectors for file",
             extra={"file": source_name, "collection": collection, "error": str(exc)},
         )
+        update_kb_status(file_path, status="error", config=config)
         return
 
     _log_current_documents(milvus_collection)
@@ -182,6 +183,7 @@ def upsert_file_to_milvus(
             "Failed to ingest file",
             extra={"file": str(path), "doc_id": doc_id, "ext": ext, "error": str(exc)},
         )
+        update_kb_status(str(path), status="error", config=config)
         return
 
     logger.info(
