@@ -225,7 +225,7 @@ The watcher under [`application/modules/watcher.py`](application/modules/watcher
 
 - detect file system changes (create/modify/delete/move) for supported extensions in `VALID_EXTS`;
 - call two hook functions, `upsert_file_to_milvus(file_path)` and `delete_file_from_milvus(file_path)`, to keep Milvus in sync.
-- update the status column in the table named by `KB_DB_TABLE` when a document begins processing (`processing`) and finishes (`done`), using the subfolder name as the `business_unit` lookup when available.
+- update the status column in the table named by `KB_DB_TABLE` when a document begins processing (`processing`) and finishes (`done`) for both upserts and deletes, using the subfolder name as the `business_unit` lookup when available.
 
 The hooks now live in [`application/modules/milvus_hooks.py`](application/modules/milvus_hooks.py) so you can swap them out or
 adjust their metadata filter (via `SOURCE_METADATA_KEY`) if your Milvus schema differs from the default defined in

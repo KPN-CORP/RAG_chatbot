@@ -80,12 +80,16 @@ def delete_file_from_milvus(
     collection = collection_name or config.collection_name
     source_name = Path(file_path).name
 
+    # Mark the job as in-flight before removing vectors.
+    update_kb_status(file_path, status="processing", config=config)
+
     _connect_to_milvus(config)
     if not utility.has_collection(collection):
         logger.info(
             "Milvus collection missing; skipping delete",
             extra={"collection": collection, "file": source_name},
         )
+        update_kb_status(file_path, status="done", config=config)
         return
 
     milvus_collection = Collection(collection)
@@ -109,6 +113,7 @@ def delete_file_from_milvus(
         return
 
     _log_current_documents(milvus_collection)
+    update_kb_status(file_path, status="done", config=config)
 
 
 def upsert_file_to_milvus(
