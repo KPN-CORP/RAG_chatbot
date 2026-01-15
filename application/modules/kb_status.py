@@ -50,13 +50,19 @@ def _normalize_label(value: str) -> str:
 
 
 def _normalize_business_unit_column(column_expr):
-    """Normalize the business_unit column similarly to folder sanitization."""
+    """Normalize the business_unit column similarly to folder sanitization.
+
+    This uses REGEXP_REPLACE so the generated SQL stays compatible with MySQL
+    (the two-argument TRIM form is not supported there).
+    """
 
     cleaned = func.lower(func.trim(column_expr))
     cleaned = func.regexp_replace(cleaned, r"\s+", "_")
     cleaned = func.regexp_replace(cleaned, r"[^0-9a-z_]", "_")
     cleaned = func.regexp_replace(cleaned, r"_+", "_")
-    return func.trim(cleaned, "_")
+    # MySQL TRIM does not accept the two-argument form; remove edge underscores
+    # with a regex instead to avoid syntax errors in generated SQL.
+    return func.regexp_replace(cleaned, r"^_+|_+$", "")
 
 
 def _resolve_business_unit(file_path: str, config: Any) -> str | None:
@@ -100,7 +106,7 @@ def _resolve_row_id(
     row = conn.execute(select_stmt).fetchone()
     if row:
         return int(row[0])
-    logger.info("KB status mapping failed; filename not found", extra={"filename": filename})
+    logger.info("KB status mapping failed; filename not found", extra={"kb_filename": filename})
     return None
 
 
@@ -138,11 +144,11 @@ def update_kb_status(file_path: str, *, status: str, config: Any | None = None) 
             kb_table = table(table_name, column("id"), column("status"))
             update_stmt = update(kb_table).where(kb_table.c.id == row_id).values(status=status)
             conn.execute(update_stmt)
-        logger.info("KB status updated", extra={"filename": filename, "status": status})
+        logger.info("KB status updated", extra={"kb_filename": filename, "status": status})
     except Exception as exc:  # pragma: no cover - defensive logging aid
         logger.warning(
             "Failed to update KB status",
-            extra={"filename": filename, "status": status, "error": str(exc)},
+            extra={"kb_filename": filename, "status": status, "error": str(exc)},
         )
 
 
