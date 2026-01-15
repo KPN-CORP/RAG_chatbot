@@ -234,7 +234,9 @@ adjust their metadata filter (via `SOURCE_METADATA_KEY`) if your Milvus schema d
 verify what documents are indexed.
 
 To enable status updates, set `KB_DATABASE_URL` in your environment (for example in a `.env` file) alongside the configured
-`KB_DB_TABLE` value in `application/config.py`.
+`KB_DB_TABLE` value in `application/config.py`. The status lookup uses `REGEXP_REPLACE`, so ensure your MySQL/MariaDB
+version supports it (MySQL 8+), or adjust the normalization helpers in `application/modules/kb_status.py` for older
+engines.
 
 Run the watcher from the `application/` directory. You can pass `--profile` to
 target a specific chatbot configuration (for example `config_IRIS.py`):
