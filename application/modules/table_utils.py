@@ -1134,7 +1134,7 @@ def change_table_format(
     resolved_api_key = gemini_api_key or os.environ.get(api_key_env)
     if not resolved_api_key and api_key_env != "GEMINI_API_KEY":
         resolved_api_key = os.environ.get("GEMINI_API_KEY")
-    resolved_model = gemini_model or getattr(config, "gemini_chat_model", None)
+    resolved_model = gemini_model or getattr(config, "gemini_image_model", None)
 
     # Avoid calling Gemini multiple times for the same page. The image extractor
     # renders an entire page (not a specific table bbox), so one invocation per
@@ -1192,7 +1192,7 @@ def change_table_format(
                         is_double_header = False
                         is_triple_header = False
 
-                    definition_table = _looks_like_definition_table(records)
+                    # definition_table = _looks_like_definition_table(records)
                     has_nested_cells = _table_has_nested_cells(records)
                     if has_nested_cells:
                         logger.debug(
@@ -1201,12 +1201,12 @@ def change_table_format(
                                 pdf_path=pdf_path, page=page_idx + 1, table=i
                             ),
                         )
-                    has_multi_level_header = (
-                        is_triple_header or _has_more_than_double_headers(records)
-                    )
+                    # has_multi_level_header = (
+                    #     is_triple_header or _has_more_than_double_headers(records)
+                    # )
 
-                    row_count, col_count = _table_shape_summary(records)
-                    looks_like_plain_text = _looks_like_plain_text_block(records)
+                    # row_count, col_count = _table_shape_summary(records)
+                    # looks_like_plain_text = _looks_like_plain_text_block(records)
 
                     table = clean_table(dct)
                     gemini_rows: Optional[list] = None

@@ -19,7 +19,8 @@ SESSION_TTL_SECONDS = 60 * 60 * 24 * 7  # optional TTL for session keys
 MAX_HISTORY_MESSAGES = 20  # how many recent messages to load into memory
 
 
-gemini_chat_model = "models/gemini-2.0-flash-lite"  # pick the chat model you want
+gemini_chat_model = "models/gemini-2.5-flash-lite"  # pick the chat model you want
+gemini_image_model = "models/gemini-2.5-flash" 
 embedding_model_name = "models/gemini-embedding-001"  # embedding model for Gemini
 semantic_embedding_model_name = "LazarusNLP/all-indo-e5-small-v4"  # embedding model for semantic search
 

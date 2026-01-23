@@ -400,7 +400,7 @@ def extract_table_with_gemini(
         )
 
         chat_model = ChatGoogleGenerativeAI(
-            model=model_name or getattr(config, "gemini_chat_model", None),
+            model=model_name or getattr(config, "gemini_image_model", None),
             google_api_key=api_key
             or os.environ.get(getattr(config, "google_api_key_name", "GEMINI_API_KEY")),
             temperature=0,
