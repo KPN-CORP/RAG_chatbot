@@ -8,18 +8,14 @@ text, metadata), adjust ``SOURCE_METADATA_KEY`` or the filtering logic below.
 
 from __future__ import annotations
 
+import os
 from collections import Counter
 from pathlib import Path
 from typing import Final
 
 from config_loader import load_config
-from ingest.langchain_milvus_ingest import ingest_pages_to_milvus, ingest_text_document
-from ingest.pdf_with_tables import extract_pdf_content
 from logging_config import get_logger
-from modules.kb_status import update_kb_status
 from modules.utils import _build_document_identifier
-from pymilvus import Collection, connections, utility
-
 logger = get_logger(__name__)
 
 # The metadata key that stores the human-readable filename/source.
@@ -28,6 +24,8 @@ SOURCE_METADATA_KEY: Final[str] = "source"
 
 def _connect_to_milvus(config) -> None:
     """Establish a connection to Milvus using the configured host/port."""
+
+    from pymilvus import connections
 
     connections.connect(alias="default", host=config.milvus_host, port=str(config.milvus_port))
 
@@ -39,6 +37,34 @@ def _unwrap_source(record: dict) -> str:
     if isinstance(metadata, dict):
         return str(metadata.get(SOURCE_METADATA_KEY) or metadata.get("filename") or "<unknown>")
     return "<unknown>"
+
+
+def _escape_milvus_string(value: str) -> str:
+    """Escape a string literal so it is safe to embed in a Milvus expression."""
+
+    return value.replace("\\", "\\\\").replace('"', "\\\"")
+
+
+def _build_delete_expr(file_path: str) -> tuple[str, list[str]]:
+    """Build a Milvus delete expression for all known source metadata keys.
+
+    Older ingestion runs sometimes stored the full file path instead of the
+    basename, or used alternate metadata keys. To avoid orphaned vectors, we
+    delete using both the basename and full path across the common keys.
+    """
+
+    path = Path(file_path)
+    normalized_full_path = os.path.normpath(str(path))
+    candidates = [path.name, normalized_full_path]
+    # Preserve both values when they differ to support older metadata formats.
+    unique_candidates = [c for i, c in enumerate(candidates) if c and c not in candidates[:i]]
+    keys = [SOURCE_METADATA_KEY, "filename", "path", "file_name"]
+    expressions = [
+        f'metadata["{key}"] == "{_escape_milvus_string(value)}"'
+        for key in keys
+        for value in unique_candidates
+    ]
+    return " or ".join(expressions), unique_candidates
 
 
 def _log_current_documents(collection: Collection, *, sample_limit: int = 10) -> None:
@@ -80,10 +106,14 @@ def delete_file_from_milvus(
     collection = collection_name or config.collection_name
     source_name = Path(file_path).name
 
+    from modules.kb_status import update_kb_status
+
     # Mark the job as in-flight before removing vectors.
     update_kb_status(file_path, status="processing", config=config)
 
     _connect_to_milvus(config)
+    from pymilvus import Collection, utility
+
     if not utility.has_collection(collection):
         logger.info(
             "Milvus collection missing; skipping delete",
@@ -94,7 +124,9 @@ def delete_file_from_milvus(
 
     milvus_collection = Collection(collection)
     milvus_collection.load()
-    expr = f'metadata["{SOURCE_METADATA_KEY}"] == "{source_name}"'
+    # Match both basename and full path across common metadata keys to avoid
+    # leaving behind vectors from older ingestion formats.
+    expr, source_candidates = _build_delete_expr(file_path)
     try:
         result = milvus_collection.delete(expr)
         logger.info(
@@ -103,6 +135,8 @@ def delete_file_from_milvus(
                 "file": source_name,
                 "collection": collection,
                 "deleted_count": getattr(result, "delete_count", getattr(result, "delete_cnt", None)),
+                "delete_expr": expr,
+                "source_candidates": source_candidates,
             },
         )
     except Exception as exc:  # pragma: no cover - defensive logging aid
@@ -124,6 +158,12 @@ def upsert_file_to_milvus(
     collection_name: str | None = None,
 ) -> None:
     """Upsert a file into Milvus and mirror its job status in the KB database."""
+
+    # Lazy imports keep optional ingest dependencies from affecting delete-only
+    # workflows (and simplify unit test imports).
+    from ingest.langchain_milvus_ingest import ingest_pages_to_milvus, ingest_text_document
+    from ingest.pdf_with_tables import extract_pdf_content
+    from modules.kb_status import update_kb_status
 
     config = config or load_config()
     collection = collection_name or config.collection_name
@@ -200,6 +240,8 @@ def upsert_file_to_milvus(
     update_kb_status(str(path), status="done", config=config)
     # Log a quick snapshot of the knowledge base after the update.
     _connect_to_milvus(config)
+    from pymilvus import Collection
+
     milvus_collection = Collection(collection)
     milvus_collection.load()
     _log_current_documents(milvus_collection)
