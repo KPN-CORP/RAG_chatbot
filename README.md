@@ -36,6 +36,8 @@ This repository contains experimentation notebooks and a production-ready FastAP
 
    ```bash
    uvicorn app:app --reload --host 0.0.0.0 --port 8000
+   or for deployment:
+   nohup /root/miniconda3/envs/rag-chatbot/bin/python /root/miniconda3/envs/rag-chatbot/bin/uvicorn app:app --reload --host 0.0.0.0 --port 5003 --access-log --log-level info > logs/app.log 2>&1 &
    ```
 
    The service exposes the following key endpoints:
