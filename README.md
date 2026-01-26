@@ -233,7 +233,9 @@ The hooks now live in [`application/modules/milvus_hooks.py`](application/module
 adjust their metadata filter (via `SOURCE_METADATA_KEY`) if your Milvus schema differs from the default defined in
 `ingest/langchain_milvus_ingest.py`. They reuse the existing ingestion pipeline (`ingest_pages_to_milvus` and
 `ingest_text_document`) and log which sources currently exist in the knowledge base after each update, making it easy to
-verify what documents are indexed.
+verify what documents are indexed. Deletes are defensive: they match both the filename and full file path across
+`metadata.source`, `metadata.filename`, `metadata.path`, and `metadata.file_name` so older ingestion runs using different
+keys or full-path values are cleaned up reliably.
 
 To enable status updates, set `KB_DATABASE_URL` in your environment (for example in a `.env` file) alongside the configured
 `KB_DB_TABLE` value in `application/config.py`. The status lookup uses `REGEXP_REPLACE`, so ensure your MySQL/MariaDB

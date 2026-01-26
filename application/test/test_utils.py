@@ -8,7 +8,7 @@ APPLICATION_DIR = Path(__file__).resolve().parents[1]
 if str(APPLICATION_DIR) not in sys.path:
     sys.path.append(str(APPLICATION_DIR))
 
-from application.modules.utils import extract_json_string
+from modules.utils import extract_json_string
 
 
 def test_extract_json_string_defaults_missing_sources_to_empty_list():
