@@ -341,7 +341,7 @@ def chat(req: ChatReq, profile: str = ""):
 
     logger.info(
         "Received chat request",
-        extra={"session_id": req.session_id, "profile": profile or "default"},
+        extra={"session_id": req.session_id, "profile": profile or "default", "collection_name": collection_name},
     )
 
     if not vectorstore:
