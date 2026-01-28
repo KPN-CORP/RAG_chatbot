@@ -340,7 +340,7 @@ def chat(req: ChatReq, profile: str = ""):
     session_ttl = _parse_ttl(config.SESSION_TTL_SECONDS)
 
     logger.info(
-        "Received chat request",
+        f"Received chat request for session id {req.session_id}, collection {collection_name}",
         extra={"session_id": req.session_id, "profile": profile or "default", "collection_name": collection_name},
     )
 
