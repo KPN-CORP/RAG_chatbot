@@ -85,6 +85,12 @@ def _build_vectorstore(
         raise
 
 
+def clear_vectorstore_cache() -> None:
+    """Clear the cached Milvus vector stores."""
+
+    _build_vectorstore.cache_clear()
+
+
 def get_vectorstore(config, *, collection_name: Optional[str] = None) -> Milvus:
     """Initialise and return the Milvus vector store for the provided config."""
 
@@ -97,4 +103,4 @@ def get_vectorstore(config, *, collection_name: Optional[str] = None) -> Milvus:
     )
 
 
-__all__ = ["get_vectorstore"]
+__all__ = ["clear_vectorstore_cache", "get_vectorstore"]
