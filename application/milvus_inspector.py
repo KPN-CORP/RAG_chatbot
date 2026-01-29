@@ -20,6 +20,8 @@ logger = get_logger(__name__)
 # Default number of rows to fetch when showing document samples so the command
 # finishes quickly even on large collections.
 DEFAULT_SAMPLE_LIMIT = 10
+# Default number of rows to scan when summarizing document sources.
+DEFAULT_SOURCE_LIMIT = 200
 
 
 def connect_to_milvus(host: str, port: str) -> None:
@@ -71,7 +73,11 @@ def fetch_collection_records(collection: Collection, limit: int) -> List[Dict]:
     )
 
 
-def show_collection_overview(collection_name: str, sample_limit: int) -> None:
+def show_collection_overview(
+    collection_name: str,
+    sample_limit: int,
+    source_limit: int,
+) -> None:
     """Log and print a brief overview of the given collection."""
 
     collection = Collection(collection_name)
@@ -81,8 +87,8 @@ def show_collection_overview(collection_name: str, sample_limit: int) -> None:
         "Inspecting collection", extra={"collection": collection_name, "entities": collection.num_entities},
     )
 
-    records = fetch_collection_records(collection, sample_limit)
-    sources, samples = summarize_sources(records, max_items=sample_limit)
+    source_records = fetch_collection_records(collection, source_limit)
+    sources, samples = summarize_sources(source_records, max_items=sample_limit)
 
     print(f"\nCollection: {collection_name}")
     print(f"Total entities: {collection.num_entities}")
@@ -132,6 +138,12 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_SAMPLE_LIMIT,
         help="Number of records to fetch per collection for inspection.",
     )
+    parser.add_argument(
+        "--source-limit",
+        type=int,
+        default=DEFAULT_SOURCE_LIMIT,
+        help="Number of records to scan when summarizing document sources.",
+    )
     return parser.parse_args()
 
 
@@ -152,7 +164,7 @@ def main() -> None:
         if not utility.has_collection(collection_name):
             logger.warning("Collection missing in Milvus", extra={"collection": collection_name})
             continue
-        show_collection_overview(collection_name, args.sample_limit)
+        show_collection_overview(collection_name, args.sample_limit, args.source_limit)
 
 
 if __name__ == "__main__":
