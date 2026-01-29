@@ -10,7 +10,7 @@ from langchain_milvus import Milvus
 from logging_config import get_logger
 from models.embbedings import get_gemini_embeddings
 from modules.utils import resolve_embedding_api_key
-from pymilvus import connections
+from pymilvus import Collection, connections
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -30,7 +30,6 @@ def _resolve_api_key(google_api_key_name: str, explicit_key: Optional[str]) -> O
         extra={"env_var": google_api_key_name},
     )
     return None
-
 
 @lru_cache(maxsize=None)
 def _build_vectorstore(
@@ -62,11 +61,15 @@ def _build_vectorstore(
         "connection_args": {"host": milvus_host, "port": str(milvus_port)},
         "text_field": "text",
         "enable_dynamic_field": True,
+        "consistency_level": "Strong",
     }
 
     try:
         logger.debug("Attempting to create Milvus vector store with vector_field parameter")
         store = Milvus(vector_field="embedding", **vectorstore_kwargs)
+        # Force-load to avoid “exists but returns empty”
+        col = getattr(store, "col", None) or getattr(store, "_collection", None) or Collection(collection_name)
+        col.load()
         logger.info("Initialised Milvus vector store", extra={"collection": collection_name})
         return store
     except TypeError as exc:
@@ -75,6 +78,9 @@ def _build_vectorstore(
             extra={"error": str(exc)},
         )
         store = Milvus(embedding_field="embedding", **vectorstore_kwargs)
+        # Force-load to avoid “exists but returns empty”
+        col = getattr(store, "col", None) or getattr(store, "_collection", None) or Collection(collection_name)
+        col.load()
         logger.info(
             "Initialised Milvus vector store using embedding_field fallback",
             extra={"collection": collection_name},
