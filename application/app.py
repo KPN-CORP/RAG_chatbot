@@ -39,7 +39,7 @@ from modules.redis import (
 )
 from schemas.api import ChatReq, ChatResp, CreateSessionResp
 from schemas.rag_outputs import AnswerWithSources, format_docs_with_metadata
-from vectorstore.milvus_vectorstore import get_vectorstore
+from vectorstore.milvus_vectorstore import clear_vectorstore_cache, get_vectorstore
 
 from dotenv import load_dotenv
 
@@ -320,6 +320,11 @@ async def upload_document(
             "skipped_chunks": skipped,
             "inserted_chunks": inserted,
         },
+    )
+    clear_vectorstore_cache()
+    logger.info(
+        "Cleared vectorstore cache after ingestion",
+        extra={"collection_name": collection_name},
     )
 
     return {
