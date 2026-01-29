@@ -411,7 +411,7 @@ def chat(req: ChatReq, profile: str = ""):
             }
         )
         if debug_retrieval:
-            logger.debug(
+            logger.info(
                 "Contextualized question generated",
                 extra={
                     "session_id": req.session_id,
@@ -431,7 +431,7 @@ def chat(req: ChatReq, profile: str = ""):
         try:
             retrieved_docs = retriever.invoke(standalone_question) or []
             for i, d in enumerate(retrieved_docs, 1):
-                logger.debug(
+                logger.info(
                     {
                         "i": i,
                         "chunk": d.page_content,
@@ -533,11 +533,11 @@ def chat(req: ChatReq, profile: str = ""):
     # 9) Debug logging helper: inspect retrieved docs from this request
     if debug_retrieval:
         if retrieved_docs:
-            logger.debug(
+            logger.info(
                 f"Retrieved documents{formatted_context}"
             )
         else:
-            logger.debug(
+            logger.info(
                 "No documents retrieved for question",
                 extra={"session_id": req.session_id, "question": req.question},
             )
