@@ -513,6 +513,7 @@ def get_page_elements(
                 }
             )
     if ocr_fallback:
+        logger.info("Checking for scanned PDF fallback after initial extraction",)
         pages_output = _apply_scanned_pdf_ocr_fallback(pdf_path, pages_output)
     return pages_output
 
@@ -523,7 +524,7 @@ def extract_pdf_content(file, use_gemini: str = "use"):
     # the vision model can decide whether they are true tables. Manual parsing
     # still runs as a fallback if Gemini fails.
     prefer_tables = (use_gemini or "").lower() == "use"
-    pdf_pages = get_page_elements(file, prefer_table_detection=prefer_tables)
+    pdf_pages = get_page_elements(file, prefer_table_detection=prefer_tables, ocr_fallback=True)
     pdf_pages = check_and_fix_nested_tables(pdf_pages)
     # Gemini now runs for any page that contains at least one table so the
     # extractor can directly produce atomic cell + narrative chunks. The
