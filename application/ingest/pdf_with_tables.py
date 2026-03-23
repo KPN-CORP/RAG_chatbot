@@ -11,7 +11,9 @@ from typing import List, Dict, Any, Iterable
 
 import pdfplumber
 
+from config_loader import load_config
 from ingest.ocr import _extract_textract_lines
+from ingest.ocr_gemini_chunking import apply_gemini_ocr_chunking
 
 from logging_config import get_logger
 
@@ -76,12 +78,20 @@ def _build_ocr_narrative_lines(textract_lines: Iterable[Dict[str, Any]]) -> List
     return narrative_lines
 
 
-def _apply_scanned_pdf_ocr_fallback(pdf_path: str, pages_output: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _apply_scanned_pdf_ocr_fallback(
+    pdf_path: str,
+    pages_output: List[Dict[str, Any]],
+    *,
+    profile: str = "",
+) -> List[Dict[str, Any]]:
     """Fill empty page text using Textract when pdfplumber cannot read a scanned PDF.
 
     The fallback is intentionally conservative: it only calls Textract when at
     least one page has neither narrative text nor detected tables. Pages that
-    already contain text extracted by ``pdfplumber`` are left unchanged.
+    already contain text extracted by ``pdfplumber`` are left unchanged. When
+    OCR text is produced and ``config.use_gemini_chunking`` is enabled, Gemini
+    is used strictly as a chunker over the Textract text (not as the OCR
+    engine).
     """
 
     empty_pages = [
@@ -121,6 +131,12 @@ def _apply_scanned_pdf_ocr_fallback(pdf_path: str, pages_output: List[Dict[str, 
 
         page["narrative_lines"] = ocr_lines
         page["narrative_text"] = "\n".join(line["text"] for line in ocr_lines).strip()
+        page["ocr_used"] = True
+        page["ocr_engine"] = "textract"
+
+    config = load_config(profile)
+    if getattr(config, "use_gemini_chunking", True):
+        pages_output = apply_gemini_ocr_chunking(pages_output, profile=profile)
 
     return pages_output
 
@@ -185,6 +201,7 @@ def get_page_elements(
     *,
     prefer_table_detection: bool = False,
     ocr_fallback: bool = True,
+    profile: str = "",
 ):
     """Return page dictionaries containing narrative text and table metadata.
 
@@ -513,17 +530,30 @@ def get_page_elements(
             )
     if ocr_fallback:
         logger.info("Checking for scanned PDF fallback after initial extraction",)
-        pages_output = _apply_scanned_pdf_ocr_fallback(pdf_path, pages_output)
+        pages_output = _apply_scanned_pdf_ocr_fallback(pdf_path, pages_output, profile=profile)
     return pages_output
 
 
-def extract_pdf_content(file, use_gemini: str = "use"):
-    """Extract page text/tables from a PDF, with OCR fallback for scanned files."""
+def extract_pdf_content(file, use_gemini: str = "use", profile: str = ""):
+    """Extract page text/tables from a PDF, with OCR fallback for scanned files.
+
+    When ``config.use_gemini_chunking`` is enabled, Textract-derived OCR
+    narrative pages are additionally chunked with the configured Gemini chat
+    model before the standard ingest builder runs. This keeps scanned pages
+    aligned with the structured hierarchy used by the manual parser without
+    changing the separate Gemini image/table extraction path.
+    """
     # When Gemini is explicitly enabled, keep ambiguous framed text blocks so
     # the vision model can decide whether they are true tables. Manual parsing
     # still runs as a fallback if Gemini fails.
     prefer_tables = (use_gemini or "").lower() == "use"
-    pdf_pages = get_page_elements(file, prefer_table_detection=prefer_tables, ocr_fallback=True)
+    pdf_pages = get_page_elements(
+        file,
+        prefer_table_detection=prefer_tables,
+        ocr_fallback=True,
+        profile=profile,
+    )
+
     pdf_pages = check_and_fix_nested_tables(pdf_pages)
     # Gemini now runs for any page that contains at least one table so the
     # extractor can directly produce atomic cell + narrative chunks. The
