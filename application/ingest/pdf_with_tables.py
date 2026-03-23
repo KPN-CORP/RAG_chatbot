@@ -5,13 +5,10 @@ table normalization to :func:`modules.table_utils.change_table_format`, which
 now always invokes the Gemini page extractor whenever a table exists on a page.
 """
 
-import os
-from pathlib import Path
-from typing import List, Dict, Any, Iterable
-
 import pdfplumber
+from pathlib import Path
 
-from ingest.ocr import _extract_textract_lines
+from typing import List, Dict, Any
 
 from logging_config import get_logger
 
@@ -33,97 +30,6 @@ from modules.narrative_utils import(
 )
 
 logger = get_logger(__name__)
-
-# Textract geometry is normalized to 0..1. Scale it into a page-like coordinate
-# space so the existing indentation heuristics (tuned for pdfplumber points) can
-# still detect nested bullets/lists on scanned PDFs.
-OCR_GEOMETRY_SCALE = 1000.0
-
-
-def _line_sort_key(line: Dict[str, Any]) -> tuple[float, float]:
-    """Return a stable top/left sort key for Textract LINE blocks."""
-
-    bbox = (((line.get("Geometry") or {}).get("BoundingBox")) or {})
-    return (float(bbox.get("Top", 0.0)), float(bbox.get("Left", 0.0)))
-
-
-def _build_ocr_narrative_lines(textract_lines: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Convert Textract LINE blocks into the narrative-line shape used downstream."""
-
-    narrative_lines: List[Dict[str, Any]] = []
-    for line in sorted(textract_lines, key=_line_sort_key):
-        text = str(line.get("Text") or "").strip()
-        if not text:
-            continue
-
-        bbox = (((line.get("Geometry") or {}).get("BoundingBox")) or {})
-        left = float(bbox.get("Left", 0.0)) * OCR_GEOMETRY_SCALE
-        top = float(bbox.get("Top", 0.0)) * OCR_GEOMETRY_SCALE
-        height = float(bbox.get("Height", 0.0)) * OCR_GEOMETRY_SCALE
-        narrative_lines.append(
-            {
-                "raw": text,
-                "text": text,
-                "had_bullet": False,
-                "min_x": left,
-                "hanging_x": left,
-                "top": top,
-                "bottom": top + height,
-                "in_band": False,
-                "trail_num_token": None,
-            }
-        )
-    return narrative_lines
-
-
-def _apply_scanned_pdf_ocr_fallback(pdf_path: str, pages_output: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Fill empty page text using Textract when pdfplumber cannot read a scanned PDF.
-
-    The fallback is intentionally conservative: it only calls Textract when at
-    least one page has neither narrative text nor detected tables. Pages that
-    already contain text extracted by ``pdfplumber`` are left unchanged.
-    """
-
-    empty_pages = [
-        page for page in pages_output if not page.get("narrative_text") and not page.get("tables")
-    ]
-    if not empty_pages:
-        return pages_output
-
-    s3_bucket = os.getenv("S3_BUCKET_NAME")
-    if not s3_bucket:
-        logger.warning(
-            "Skipping OCR fallback because S3_BUCKET_NAME is not configured",
-            extra={"pdf": Path(pdf_path).name},
-        )
-        return pages_output
-
-    s3_key = f"textract-input/{Path(pdf_path).name}"
-    logger.info(
-        "Running Textract OCR fallback for scanned PDF pages",
-        extra={"pdf": Path(pdf_path).name, "empty_pages": [p["page"] for p in empty_pages]},
-    )
-
-    textract_lines = _extract_textract_lines(pdf_path=pdf_path, s3_bucket=s3_bucket, s3_key=s3_key)
-    lines_by_page: Dict[int, List[Dict[str, Any]]] = {}
-    for line in textract_lines:
-        page_number = int(line.get("Page") or 0)
-        if page_number <= 0:
-            continue
-        lines_by_page.setdefault(page_number, []).append(line)
-
-    for page in pages_output:
-        if page.get("narrative_text") or page.get("tables"):
-            continue
-
-        ocr_lines = _build_ocr_narrative_lines(lines_by_page.get(page["page"], []))
-        if not ocr_lines:
-            continue
-
-        page["narrative_lines"] = ocr_lines
-        page["narrative_text"] = "\n".join(line["text"] for line in ocr_lines).strip()
-
-    return pages_output
 
 
 def _looks_like_floating_trailing_number(line_words: List[Dict[str, Any]], prev_words: List[Dict[str, Any]]) -> bool:
@@ -181,12 +87,7 @@ def _merge_floating_trailing_numbers(grouped_words: List[List[Dict[str, Any]]]) 
     return merged
 
 
-def get_page_elements(
-    pdf_path,
-    *,
-    prefer_table_detection: bool = False,
-    ocr_fallback: bool = True,
-):
+def get_page_elements(pdf_path, *, prefer_table_detection: bool = False):
     """Return page dictionaries containing narrative text and table metadata.
 
     When ``prefer_table_detection`` is ``True`` (set by ``extract_pdf_content``
@@ -194,9 +95,6 @@ def get_page_elements(
     paragraph blocks as narrative text is skipped so ambiguous "tables" still
     reach the Gemini extractor. Manual parsing remains available as a fallback
     when Gemini fails.
-
-    When ``ocr_fallback`` is enabled, empty pages are filled from Textract in
-    the same pass so callers only need a single extraction entry point.
     """
     pdf_name = Path(pdf_path).name
     logger.info("Scanning PDF for tables and narrative", extra={"pdf": pdf_name})
@@ -512,13 +410,10 @@ def get_page_elements(
                     "tables": table_records,
                 }
             )
-    if ocr_fallback:
-        pages_output = _apply_scanned_pdf_ocr_fallback(pdf_path, pages_output)
     return pages_output
 
 
 def extract_pdf_content(file, use_gemini: str = "use"):
-    """Extract page text/tables from a PDF, with OCR fallback for scanned files."""
     # When Gemini is explicitly enabled, keep ambiguous framed text blocks so
     # the vision model can decide whether they are true tables. Manual parsing
     # still runs as a fallback if Gemini fails.
