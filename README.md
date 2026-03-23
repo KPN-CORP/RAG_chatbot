@@ -84,8 +84,6 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
 
    - If `pdfplumber` cannot read a page because the PDF is image-only/scanned, the ingest flow now falls back to AWS Textract. The PDF is uploaded to the S3 bucket configured by `S3_BUCKET_NAME` using a temporary object key, Textract `LINE` blocks are stitched back into per-page narrative text, and the temporary S3 object is deleted after OCR finishes. Make sure `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `S3_BUCKET_NAME` are available, and ensure the bucket is in the same AWS region as the Textract client (the code now auto-detects the bucket region before starting Textract).
 
-   - When the Textract OCR fallback runs (`ocr_fallback=True`) and `use_gemini_chunking` is enabled in `application/config.py` (enabled by default), the extracted OCR text is then hierarchically chunked with `gemini_chat_model`. Gemini is used only as the chunker over Textract output, not as the OCR engine itself. The OCR chunker processes one page at a time, inherits the previous page hierarchy when a new OCR page starts with a literal bullet/numbered-list marker, and keeps only one language on bilingual pages by preferring Indonesian first and English second. This Textract-only gate means the separate Gemini image/table extraction flow and its existing fallback behavior are unchanged. If Gemini OCR chunking fails, the existing manual chunking pipeline remains the fallback.
-
   - Any page that contains a table now triggers the Gemini image extractor so
     the entire page is parsed into atomic chunk strings **and** narrative
     chunks. Gemini is asked to output a simple JSON array of chunk strings so
@@ -123,7 +121,7 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
     - Blank table cells are coerced to empty strings instead of `null` so the
       Pydantic schema accepts every cell chunk without validation failures.
 
-  - Control table-page Gemini invocation with the `use_gemini` flag on
+  - Control Gemini invocation with the `use_gemini` flag on
     [`extract_pdf_content`](application/ingest/pdf_with_tables.py). Accepted
     values are `"use"` (always call Gemini when a table is detected), `"skip"`
     (force the legacy parsers), or `"fallback"` (only call Gemini for pages that
