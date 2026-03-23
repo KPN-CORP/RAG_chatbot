@@ -164,6 +164,7 @@ def main() -> None:
         if not utility.has_collection(collection_name):
             logger.warning("Collection missing in Milvus", extra={"collection": collection_name})
             continue
+        print("sample_limit", args.sample_limit, "source_limit", args.source_limit)
         show_collection_overview(collection_name, args.sample_limit, args.source_limit)
 
 
