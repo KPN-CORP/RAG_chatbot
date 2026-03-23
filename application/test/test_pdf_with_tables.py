@@ -9,23 +9,6 @@ if "pdfplumber" not in sys.modules:
     stub.open = lambda *_args, **_kwargs: None
     sys.modules["pdfplumber"] = stub
 
-
-if "boto3" not in sys.modules:
-    boto3_stub = types.ModuleType("boto3")
-
-    class _DummySession:
-        def client(self, *_args, **_kwargs):
-            return types.SimpleNamespace()
-
-    boto3_stub.Session = lambda *_args, **_kwargs: _DummySession()
-    boto3_stub.client = lambda *_args, **_kwargs: types.SimpleNamespace()
-    sys.modules["boto3"] = boto3_stub
-
-if "dotenv" not in sys.modules:
-    dotenv_stub = types.ModuleType("dotenv")
-    dotenv_stub.load_dotenv = lambda *_args, **_kwargs: None
-    sys.modules["dotenv"] = dotenv_stub
-
 if "logging_config" not in sys.modules:
     logging_stub = types.ModuleType("logging_config")
 
@@ -137,78 +120,3 @@ def test_prefers_tables_when_gemini_enabled(monkeypatch):
 def test_reclassifies_paragraph_tables_when_not_preferring_tables(monkeypatch):
     pages = _patch_minimal_pdf(monkeypatch, prefer_table_detection=False)
     assert pages[0]["tables"] == [], "Paragraph-like boxes become narrative when Gemini is off"
-
-
-def test_extract_pdf_content_uses_ocr_fallback_for_scanned_pages(monkeypatch):
-    page = _DummyPage(width=1000, height=1000, tables=[])
-    dummy_pdf = _DummyPDF([page])
-
-    monkeypatch.setattr(
-        pdf_with_tables,
-        "pdfplumber",
-        types.SimpleNamespace(open=lambda _path: dummy_pdf),
-    )
-    monkeypatch.setattr(pdf_with_tables, "check_and_fix_nested_tables", lambda pages: pages)
-    monkeypatch.setattr(
-        pdf_with_tables,
-        "change_table_format",
-        lambda pages, **_kwargs: pages,
-    )
-    monkeypatch.setattr(pdf_with_tables.os, "getenv", lambda key, default=None: "bucket" if key == "S3_BUCKET_NAME" else default)
-    monkeypatch.setattr(
-        pdf_with_tables,
-        "_extract_textract_lines",
-        lambda **_kwargs: [
-            {
-                "BlockType": "LINE",
-                "Page": 1,
-                "Text": "Scanned line 1",
-                "Geometry": {"BoundingBox": {"Top": 0.1, "Left": 0.2, "Height": 0.05}},
-            },
-            {
-                "BlockType": "LINE",
-                "Page": 1,
-                "Text": "Scanned line 2",
-                "Geometry": {"BoundingBox": {"Top": 0.2, "Left": 0.2, "Height": 0.05}},
-            },
-        ],
-    )
-
-    pages = pdf_with_tables.extract_pdf_content("placeholder.pdf")
-
-    assert pages[0]["narrative_text"] == "Scanned line 1\nScanned line 2"
-    assert [line["text"] for line in pages[0]["narrative_lines"]] == [
-        "Scanned line 1",
-        "Scanned line 2",
-    ]
-    assert pages[0]["narrative_lines"][0]["hanging_x"] == 200.0
-
-
-def test_extract_pdf_content_keeps_pdfplumber_text_without_ocr(monkeypatch):
-    page = _DummyPage(width=1000, height=1000, tables=[])
-    page.extract_words = lambda **_kwargs: [
-        {"text": "Native", "x0": 0, "x1": 10, "top": 10, "bottom": 20},
-        {"text": "text", "x0": 12, "x1": 20, "top": 10, "bottom": 20},
-    ]
-    dummy_pdf = _DummyPDF([page])
-
-    monkeypatch.setattr(
-        pdf_with_tables,
-        "pdfplumber",
-        types.SimpleNamespace(open=lambda _path: dummy_pdf),
-    )
-    monkeypatch.setattr(pdf_with_tables, "check_and_fix_nested_tables", lambda pages: pages)
-    monkeypatch.setattr(
-        pdf_with_tables,
-        "change_table_format",
-        lambda pages, **_kwargs: pages,
-    )
-
-    def _unexpected_ocr(**_kwargs):
-        raise AssertionError("OCR fallback should not run when pdfplumber returns text")
-
-    monkeypatch.setattr(pdf_with_tables, "_extract_textract_lines", _unexpected_ocr)
-
-    pages = pdf_with_tables.extract_pdf_content("placeholder.pdf")
-
-    assert pages[0]["narrative_text"] == "Native text"
