@@ -608,7 +608,6 @@ def build_chunks_from_pages(
     Behavior:
       - Carry last seen ALL-CAPS header across pages (no '/pagebreak' markers).
       - Narrative → nodes → semantic grouping → (optional) length fallback → policy_rule chunks.
-      - OCR Gemini rules (when present) are treated as already-structured policy rules.
       - Tables → cell-level chunks (one chunk per cell).
     """
     built: List[Dict[str, Any]] = []
@@ -618,8 +617,7 @@ def build_chunks_from_pages(
     for pg in pages_sorted:
         page_no = pg.get("page")
         gemini_chunks = pg.get("gemini_chunks")
-        gemini_rules = pg.get("gemini_rules")
-        page_had_gemini = bool(gemini_chunks or gemini_rules)
+        page_had_gemini = bool(gemini_chunks)
 
         # Always include Gemini chunks but still let the semantic/atomic pipeline
         # inspect the page so section carry-over logic sees a continuous stream
@@ -633,18 +631,9 @@ def build_chunks_from_pages(
                     page=page_no if page_no is not None else -1,
                 )
             )
-        if gemini_rules:
-            built.extend(
-                atomic_rules_to_chunks(
-                    gemini_rules,
-                    doc_id=doc_id,
-                    source=source,
-                    page=page_no if page_no is not None else -1,
-                )
-            )
 
         nar = (pg.get("narrative_text") or "").strip()
-        if not nar and gemini_chunks:
+        if not nar and page_had_gemini:
             # When Gemini supplied the only visible text on the page, synthesize
             # a narrative string from its chunks so headers still reset
             # section_carry for the following pages.
@@ -695,12 +684,6 @@ def build_chunks_from_pages(
                 # chunks when Gemini did not run so we avoid duplicates while
                 # still updating section_carry.
                 built.extend(atomic_rules_to_chunks(rules, doc_id=doc_id, source=source, page=page_no))
-
-        if gemini_rules:
-            for rule in gemini_rules:
-                rule_path = rule.get("path") or []
-                if rule_path:
-                    section_carry = rule_path[0]
 
         # 2) Tables → cell chunks
         for t in tables:
