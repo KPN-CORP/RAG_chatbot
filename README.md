@@ -82,6 +82,8 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
 
    The service extracts tables and text using `ingest/pdf_with_tables.py`, generates Gemini embeddings, and stores chunks in Milvus. Duplicate chunks (same checksum) are skipped automatically.
 
+   - If `pdfplumber` cannot read a page because the PDF is image-only/scanned, the ingest flow now falls back to AWS Textract. The PDF is uploaded to the S3 bucket configured by `S3_BUCKET_NAME` using a temporary object key, Textract `LINE` blocks are stitched back into per-page narrative text, and the temporary S3 object is deleted after OCR finishes. Make sure `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `S3_BUCKET_NAME` are available, and ensure the bucket is in the same AWS region as the Textract client (the code now auto-detects the bucket region before starting Textract).
+
   - Any page that contains a table now triggers the Gemini image extractor so
     the entire page is parsed into atomic chunk strings **and** narrative
     chunks. Gemini is asked to output a simple JSON array of chunk strings so
