@@ -115,6 +115,17 @@ def image_to_binary(image: Union[str, Path, bytes, bytearray, BinaryIO]) -> byte
 def _extract_textract_lines(
     pdf_path: str, s3_bucket: str, s3_key: str
 ) -> List[dict]:
-    """Extract LINE blocks from Textract for scanned PDFs."""
+    """Return Textract ``LINE`` blocks for a scanned PDF.
+
+    Args:
+        pdf_path: Local PDF path uploaded to S3 for Textract processing.
+        s3_bucket: Bucket used as temporary storage for the PDF.
+        s3_key: Object key used for the uploaded PDF.
+
+    Returns:
+        A list of Textract blocks filtered down to ``BlockType == "LINE"``.
+        Each block still includes the original page number and geometry so the
+        caller can rebuild page text in reading order.
+    """
     resp = extract_pdf_pages(pdf_path=pdf_path, s3_bucket=s3_bucket, s3_key=s3_key)
     return [block for block in resp if isinstance(block, dict) and block.get("BlockType") == "LINE"]
