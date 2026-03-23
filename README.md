@@ -51,6 +51,7 @@ This repository contains experimentation notebooks and a production-ready FastAP
 
 - All chatbot endpoints accept an optional `profile` query/header parameter (for example, `POST /ask?profile=IRIS`). Leaving it empty keeps the legacy default behaviour and loads `application/config.py`.
 - `POST /ask` and `POST /ingest/upload` accept an optional `business_unit` query parameter to scope reads/writes to the corresponding `"{collection_name}_{business_unit}"` Milvus collection. Spaces or punctuation in the business unit are normalized to underscores for Milvus-safe collection names.
+- `POST /ask` also accepts `business_unit` in the JSON body. When present, Nastari's system prompt introduces itself as `KPN BU {business_unit}`; when omitted, the legacy `KPN Corp` wording is retained.
 - Valid values for `business_unit` are defined in `BUSINESS_UNITS` inside `application/config.py`.
 - A profile name picks up a matching config module named `config_{PROFILE}.py` (e.g., `config_IRIS.py`). Missing profiles log a warning and fall back to the default config so existing integrations keep working.
 - The `IRIS` profile returns a slimmed down chat payload (`{"answer": ..., "not_found": ...}`) without the `sources` key, while other profiles continue returning `sources` alongside the answer.
@@ -176,6 +177,17 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
    ```
 
    The service uses Redis conversation memory, retrieves similar chunks from Milvus, feeds context to Gemini (`models/gemini-2.5-flash` by default), and returns a JSON answer with document sources.
+
+   The `/ask` request body can also include `business_unit` so the generated answer uses the matching HR persona in the system prompt, for example:
+
+   ```json
+   {
+     "session_id": "<uuid-from-session-endpoint>",
+     "question": "Apa kebijakan cuti tahunan karyawan?",
+     "business_unit": "Plantations",
+     "debug_retrieval": false
+   }
+   ```
 
 4. **Session expiry**
 

@@ -46,7 +46,24 @@ def _escape_prompt_braces(prompt: str, *, allow: set[str]) -> str:
     return escaped
 
 
-_qa_system_prompt_template = """Nama kamu adalah Nastari. Kamu adalah Assistant Human Capital Officer di KPN Corp
+def build_qa_system_prompt(business_unit: str | None = None) -> str:
+    """Build the QA system prompt for the active business unit.
+
+    The /ask endpoint passes ``req.business_unit`` into this helper so the
+    assistant persona can mention the caller's business unit directly in the
+    system prompt while still preserving the ``{context}`` LangChain variable.
+    When the request omits the field, we keep the legacy default persona text.
+    """
+
+    cleaned_business_unit = (business_unit or "").strip()
+    company_scope = (
+        f"KPN BU {cleaned_business_unit}" if cleaned_business_unit else "KPN Corp"
+    )
+    prompt_template = _qa_system_prompt_template.replace("{company_scope}", company_scope)
+    return _escape_prompt_braces(prompt_template, allow={"context"})
+
+
+_qa_system_prompt_template = """Nama kamu adalah Nastari. Kamu adalah Assistant Human Capital Officer di {company_scope}
 Bersikaplah seperti HR profesional yang membantu karyawan dengan pertanyaan terkait kebijakan perusahaan dan masalah karyawan dengan ramah, profesional, dan empatik.
 
 Aturan utama:
@@ -70,7 +87,8 @@ Format output WAJIB:
 }
 """
 
-qa_system_prompt = _escape_prompt_braces(_qa_system_prompt_template, allow={"context"})
+# Default prompt used by flows that do not inject a request-scoped business unit.
+qa_system_prompt = build_qa_system_prompt()
 
 CONTEXTUALIZE_QUESTION_PROMPT = ChatPromptTemplate.from_messages(
     [

@@ -453,10 +453,19 @@ def chat(req: ChatReq, profile: str = ""):
         # re-run document formatting internally.
         formatted_context = format_docs_with_metadata(retrieved_docs)
 
+    # Resolve the request-scoped QA prompt once so the final system message can
+    # mention the caller's business unit without affecting profiles that still
+    # expose only a static ``qa_system_prompt`` string.
+    qa_system_prompt = getattr(
+        config,
+        "build_qa_system_prompt",
+        lambda business_unit=None: config.qa_system_prompt,
+    )(req.business_unit)
+
     # 5) Build the prompt — USE a plain string {history} placeholder (avoid MessagesPlaceholder)
     qa_prompt = ChatPromptTemplate.from_messages(
         [
-            ("system", config.qa_system_prompt),
+            ("system", qa_system_prompt),
             (
                 "system",
                 (
