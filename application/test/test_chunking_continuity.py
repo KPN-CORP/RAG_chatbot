@@ -118,3 +118,196 @@ def test_build_chunks_from_pages_accepts_ocr_narrative_lines(monkeypatch):
     )
 
     assert [chunk["chunk_text"] for chunk in built] == ["Parent bullet.", "Child bullet."]
+
+
+def test_build_chunks_from_pages_uses_gemini_rules_and_updates_section_carry(monkeypatch):
+    parse_calls = []
+
+    def fake_parse_policy_to_nodes(text: str, section_hint=None, lines_with_meta=None):
+        parse_calls.append(section_hint)
+        return [{"kind": "para", "line": text.strip(), "path": [section_hint] if section_hint else []}]
+
+    def fake_group_atomic_rules_semantic(nodes, embeddings=None, sim_threshold=None, use_percentile=None, percentile=None):
+        return [{"path": n.get("path", []), "text": n.get("line", "")} for n in nodes]
+
+    def fake_semantic_refine_rules(rules, embeddings=None, enable=True, max_chars=None, breakpoint_threshold_type=None, breakpoint_threshold_amount=None):
+        return rules
+
+    monkeypatch.setattr(chunking, "parse_policy_to_nodes", fake_parse_policy_to_nodes)
+    monkeypatch.setattr(chunking, "group_atomic_rules_semantic", fake_group_atomic_rules_semantic)
+    monkeypatch.setattr(chunking, "semantic_refine_rules", fake_semantic_refine_rules)
+
+    pages = [
+        {"page": 1, "narrative_text": "bullet carry page", "gemini_rules": [{"path": ["Bab 1", "Bagian A"], "text": "Butir hasil OCR"}]},
+        {"page": 2, "narrative_text": "Lanjutan butir"},
+    ]
+
+    built = chunking.build_chunks_from_pages(
+        pages,
+        doc_id="doc-gemini-rules",
+        source="pdf",
+        embeddings_for_semantic=None,
+    )
+
+    assert built[0]["chunk_text"] == "Bab 1 > Bagian A — Butir hasil OCR"
+    assert parse_calls == [None, "Bab 1"]
+
+
+def test_apply_gemini_ocr_chunking_only_processes_textract_pages(monkeypatch):
+    import importlib
+    import types
+
+    monkeypatch.setitem(sys.modules, "langchain", types.ModuleType("langchain"))
+    output_parsers = types.ModuleType("langchain.output_parsers")
+    output_parsers.PydanticOutputParser = object
+    monkeypatch.setitem(sys.modules, "langchain.output_parsers", output_parsers)
+
+    prompts = types.ModuleType("langchain_core.prompts")
+    prompts.ChatPromptTemplate = object
+    monkeypatch.setitem(sys.modules, "langchain_core.prompts", prompts)
+
+    google_genai = types.ModuleType("langchain_google_genai")
+    google_genai.ChatGoogleGenerativeAI = object
+    monkeypatch.setitem(sys.modules, "langchain_google_genai", google_genai)
+
+    pydantic = types.ModuleType("pydantic")
+
+    class _BaseModel:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+        def model_dump(self):
+            return self.__dict__.copy()
+
+    def _field(default=None, default_factory=None, description=None):
+        return default_factory() if default_factory is not None else default
+
+    pydantic.BaseModel = _BaseModel
+    pydantic.Field = _field
+    monkeypatch.setitem(sys.modules, "pydantic", pydantic)
+
+    sys.modules.pop("application.ingest.ocr_gemini_chunking", None)
+    ocr_gemini_chunking = importlib.import_module("application.ingest.ocr_gemini_chunking")
+
+    calls = []
+
+    def fake_chunk(page_text: str, previous_hierarchy=None, profile=""):
+        calls.append({"page_text": page_text, "previous_hierarchy": previous_hierarchy})
+        return ocr_gemini_chunking.OCRHierarchyPage(
+            primary_language="id",
+            rules=[ocr_gemini_chunking.OCRHierarchyRule(path=["Bab 1"], text=page_text)],
+        )
+
+    monkeypatch.setattr(ocr_gemini_chunking, "chunk_ocr_page_with_gemini", fake_chunk)
+
+    pages = [
+        {"page": 1, "narrative_text": "Textract page", "ocr_used": True, "ocr_engine": "textract", "tables": []},
+        {"page": 2, "narrative_text": "Gemini OCR page", "ocr_used": True, "ocr_engine": "gemini", "tables": []},
+        {"page": 3, "narrative_text": "Table page", "ocr_used": True, "ocr_engine": "textract", "tables": [{"table_index": 0}], "gemini_chunks": [{"chunk_text": "table"}]},
+    ]
+
+    result = ocr_gemini_chunking.apply_gemini_ocr_chunking(pages)
+
+    assert [call["page_text"] for call in calls] == ["Textract page"]
+    assert result[0]["gemini_rules"] == [{"path": ["Bab 1"], "text": "Textract page"}]
+    assert "gemini_rules" not in result[1]
+    assert result[2]["gemini_chunks"] == [{"chunk_text": "table"}]
+
+
+def test_chunk_ocr_page_with_gemini_sends_page_text_as_human_content(monkeypatch):
+    import importlib
+    import types
+
+    monkeypatch.setitem(sys.modules, "langchain", types.ModuleType("langchain"))
+
+    parser_module = types.ModuleType("langchain.output_parsers")
+
+    class FakeParser:
+        def __init__(self, pydantic_object=None):
+            self.pydantic_object = pydantic_object
+
+        def get_format_instructions(self):
+            return "schema"
+
+        def invoke(self, value):
+            return value
+
+        def __ror__(self, other):
+            return other
+
+    parser_module.PydanticOutputParser = FakeParser
+    monkeypatch.setitem(sys.modules, "langchain.output_parsers", parser_module)
+
+    prompts_module = types.ModuleType("langchain_core.prompts")
+
+    captured = {}
+
+    class FakePromptTemplate:
+        def __init__(self, messages):
+            self.messages = messages
+
+        @classmethod
+        def from_messages(cls, messages):
+            captured["messages"] = messages
+            return cls(messages)
+
+        def partial(self, **kwargs):
+            captured["partial"] = kwargs
+            return self
+
+        def __or__(self, other):
+            return other
+
+    prompts_module.ChatPromptTemplate = FakePromptTemplate
+    monkeypatch.setitem(sys.modules, "langchain_core.prompts", prompts_module)
+
+    google_module = types.ModuleType("langchain_google_genai")
+
+    class FakeChain:
+        def __init__(self, model=None, google_api_key=None, temperature=None):
+            captured["model"] = model
+            captured["google_api_key"] = google_api_key
+            captured["temperature"] = temperature
+
+        def __or__(self, other):
+            return self
+
+        def invoke(self, payload):
+            captured["payload"] = payload
+            class Result:
+                primary_language = "id"
+                rules = []
+            return Result()
+
+    google_module.ChatGoogleGenerativeAI = FakeChain
+    monkeypatch.setitem(sys.modules, "langchain_google_genai", google_module)
+
+    pydantic = types.ModuleType("pydantic")
+
+    class _BaseModel:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+        def model_dump(self):
+            return self.__dict__.copy()
+
+    def _field(default=None, default_factory=None, description=None):
+        return default_factory() if default_factory is not None else default
+
+    pydantic.BaseModel = _BaseModel
+    pydantic.Field = _field
+    monkeypatch.setitem(sys.modules, "pydantic", pydantic)
+
+    sys.modules.pop("application.ingest.ocr_gemini_chunking", None)
+    ocr_gemini_chunking = importlib.import_module("application.ingest.ocr_gemini_chunking")
+    monkeypatch.setattr(ocr_gemini_chunking, "load_config", lambda *_args, **_kwargs: types.SimpleNamespace(gemini_chat_model="gemini-test", google_api_key_name="GEMINI_API_KEY"))
+    monkeypatch.setattr(ocr_gemini_chunking.os, "environ", {"GEMINI_API_KEY": "secret"})
+
+    ocr_gemini_chunking.chunk_ocr_page_with_gemini("OCR body", previous_hierarchy=["Bab 1"])
+
+    assert captured["messages"][0][0] == "system"
+    assert captured["messages"][1][0] == "human"
+    assert captured["partial"]["previous_hierarchy"] == "Bab 1"
+    assert captured["payload"] == {"page_text": "OCR body"}
