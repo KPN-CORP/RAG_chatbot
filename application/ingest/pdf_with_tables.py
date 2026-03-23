@@ -98,13 +98,12 @@ def _apply_scanned_pdf_ocr_fallback(pdf_path: str, pages_output: List[Dict[str, 
         )
         return pages_output
 
-    s3_key = f"textract-input/{Path(pdf_path).name}"
     logger.info(
         "Running Textract OCR fallback for scanned PDF pages",
         extra={"pdf": Path(pdf_path).name, "empty_pages": [p["page"] for p in empty_pages]},
     )
 
-    textract_lines = _extract_textract_lines(pdf_path=pdf_path, s3_bucket=s3_bucket, s3_key=s3_key)
+    textract_lines = _extract_textract_lines(pdf_path=pdf_path, s3_bucket=s3_bucket)
     lines_by_page: Dict[int, List[Dict[str, Any]]] = {}
     for line in textract_lines:
         page_number = int(line.get("Page") or 0)

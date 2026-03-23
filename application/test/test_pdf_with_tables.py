@@ -21,6 +21,19 @@ if "boto3" not in sys.modules:
     boto3_stub.client = lambda *_args, **_kwargs: types.SimpleNamespace()
     sys.modules["boto3"] = boto3_stub
 
+
+if "botocore.exceptions" not in sys.modules:
+    botocore_exceptions = types.ModuleType("botocore.exceptions")
+
+    class ClientError(Exception):
+        def __init__(self, response, operation_name):
+            super().__init__(operation_name)
+            self.response = response
+            self.operation_name = operation_name
+
+    botocore_exceptions.ClientError = ClientError
+    sys.modules["botocore.exceptions"] = botocore_exceptions
+
 if "dotenv" not in sys.modules:
     dotenv_stub = types.ModuleType("dotenv")
     dotenv_stub.load_dotenv = lambda *_args, **_kwargs: None
