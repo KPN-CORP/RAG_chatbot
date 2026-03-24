@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 from config_loader import load_config
@@ -39,23 +40,39 @@ def list_collections() -> List[str]:
     return collections
 
 
-def summarize_sources(records: Iterable[Dict], *, max_items: int) -> Tuple[Counter, List[Dict]]:
-    """Summarize source metadata and return a limited set of sample records.
+def unwrap_source(record: Dict) -> str:
+    """Return the best available source label from a Milvus record."""
 
-    The function counts how many times each source appears in the result set
-    and also returns the original records (trimmed to `max_items`) so callers
-    can show the associated text/metadata.
-    """
+    metadata = record.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return "<unknown source>"
+
+    raw_source = (
+        metadata.get("source")
+        or metadata.get("filename")
+        or metadata.get("file_name")
+        or metadata.get("path")
+    )
+    if not raw_source:
+        return "<unknown source>"
+
+    return Path(str(raw_source)).name or str(raw_source)
+
+
+def summarize_sources(records: Iterable[Dict], *, max_items: int) -> Tuple[Counter, List[Dict]]:
+    """Summarize source metadata and return one sample record per source."""
 
     source_counter: Counter = Counter()
     samples: List[Dict] = []
+    sampled_sources: set[str] = set()
 
     for record in records:
-        metadata = record.get("metadata") or {}
-        source = metadata.get("source") or "<unknown source>"
+        source = unwrap_source(record)
         source_counter[source] += 1
-        if len(samples) < max_items:
-            samples.append(record)
+        if len(samples) >= max_items or source in sampled_sources:
+            continue
+        samples.append(record)
+        sampled_sources.add(source)
 
     return source_counter, samples
 
@@ -92,8 +109,10 @@ def show_collection_overview(
 
     print(f"\nCollection: {collection_name}")
     print(f"Total entities: {collection.num_entities}")
+    print(f"Unique document sources in scanned rows: {len(sources)}")
+    print(f"Rows scanned for source summary: {len(source_records)}")
     if sources:
-        print("Document sources (sample counts):")
+        print("Document sources (chunk counts within scanned rows):")
         for source, count in sources.most_common():
             print(f"  - {source}: {count} sample chunk(s)")
     else:
@@ -103,7 +122,7 @@ def show_collection_overview(
         print("\nSample documents:")
         for sample in samples:
             metadata = sample.get("metadata") or {}
-            source = metadata.get("source") or "<unknown>"
+            source = unwrap_source(sample)
             page = metadata.get("page")
             snippet = (sample.get("text") or "").replace("\n", " ")
             snippet = (snippet[:120] + "...") if len(snippet) > 120 else snippet
@@ -164,7 +183,6 @@ def main() -> None:
         if not utility.has_collection(collection_name):
             logger.warning("Collection missing in Milvus", extra={"collection": collection_name})
             continue
-        print("sample_limit", args.sample_limit, "source_limit", args.source_limit)
         show_collection_overview(collection_name, args.sample_limit, args.source_limit)
 
 
