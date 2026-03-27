@@ -54,6 +54,7 @@ def configure_watcher(profile: str = "") -> ModuleType:
     global CURRENT_CONFIG, WATCH_DIR, VALID_EXTS
 
     config = load_config(profile)
+    # logger.info("Config loaded for watcher", extra={"profile": profile or "default"})
     CURRENT_CONFIG = config
     WATCH_DIR = getattr(config, "WATCH_DIR", "../assets/")
     VALID_EXTS = set(getattr(config, "VALID_EXTS", {".pdf", ".docx", ".txt"}))
