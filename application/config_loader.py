@@ -29,18 +29,42 @@ def load_config(profile: str = "") -> ModuleType:
     """
 
     if not profile:
-        return _import_config("config")
+        config = _import_config("config")
+        logger.info(
+            "Loaded default config module",
+            extra={
+                "resolved_config_module": getattr(config, "__name__", "config"),
+                "resolved_config_file": getattr(config, "__file__", "unknown"),
+            },
+        )
+        return config
 
     module_name = f"config_{profile.upper()}"
     logger.info(f"Attempting to load config for profile {profile}; module: {module_name}")
     try:
-        return _import_config(module_name)
-    except ModuleNotFoundError:
-        logger.warning(
-            "Requested profile config not found; falling back to default",
-            extra={"profile": profile, "module": module_name},
+        config = _import_config(module_name)
+        logger.info(
+            "Loaded profile config module",
+            extra={
+                "profile": profile,
+                "requested_config_module": module_name,
+                "resolved_config_module": getattr(config, "__name__", module_name),
+                "resolved_config_file": getattr(config, "__file__", "unknown"),
+            },
         )
-        return _import_config("config")
+        return config
+    except ModuleNotFoundError:
+        config = _import_config("config")
+        logger.warning(
+            "Requested profile config not found; using default config module",
+            extra={
+                "profile": profile,
+                "requested_config_module": module_name,
+                "resolved_config_module": getattr(config, "__name__", "config"),
+                "resolved_config_file": getattr(config, "__file__", "unknown"),
+            },
+        )
+        return config
 
 
 __all__ = ["load_config"]

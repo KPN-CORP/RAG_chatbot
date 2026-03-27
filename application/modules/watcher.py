@@ -64,7 +64,10 @@ def configure_watcher(profile: str = "") -> ModuleType:
         extra={
             "profile": profile or "default",
             "watch_dir": WATCH_DIR,
+            "watch_dir_abs": os.path.abspath(WATCH_DIR),
             "valid_exts": sorted(VALID_EXTS),
+            "config_module": getattr(config, "__name__", "unknown"),
+            "config_file": getattr(config, "__file__", "unknown"),
         },
     )
     return config
@@ -113,6 +116,7 @@ def mark_dirty(path: str) -> None:
     """Remember a changed file so the debounce worker can process it later."""
 
     if not should_index(path):
+        logger.info("Ignoring file with unsupported extension", extra={"path": path})
         return
     now = time.time()
     with pending_lock:
