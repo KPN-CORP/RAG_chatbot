@@ -32,7 +32,7 @@ def load_config(profile: str = "") -> ModuleType:
         return _import_config("config")
 
     module_name = f"config_{profile.upper()}"
-    logger.info("Attempting to load config for profile", extra={"profile": profile, "module": module_name})
+    logger.info(f"Attempting to load config for profile {profile}; module: {module_name}")
     try:
         return _import_config(module_name)
     except ModuleNotFoundError:
