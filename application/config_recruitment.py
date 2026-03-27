@@ -28,7 +28,7 @@ top_k_retrieval = 7
 
 google_api_key_name = "GEMINI_API_KEY"  # environment variable name for Gemini/Google API key
 
-WATCH_DIR = r"/home/hcispanel/chatbot-nastari/storage/app/pdf-file/"  # change this
+WATCH_DIR = r"/home/hcispanel/kpn-recruitment/storage/app/public/knowledge_docs/"  # change this
 
 VALID_EXTS = {".pdf", ".docx", ".txt"}  # adapt to your project
 KB_DB_TABLE = "kb_documents"
