@@ -6,10 +6,13 @@ now always invokes the Gemini page extractor whenever a table exists on a page.
 """
 
 import os
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Iterable
 
+import numpy as np
 import pdfplumber
+from sklearn.cluster import KMeans
 
 from config_loader import load_config
 from ingest.ocr import _extract_textract_lines
@@ -40,6 +43,27 @@ logger = get_logger(__name__)
 # space so the existing indentation heuristics (tuned for pdfplumber points) can
 # still detect nested bullets/lists on scanned PDFs.
 OCR_GEOMETRY_SCALE = 1000.0
+LANGUAGE_FILTER_MIN_LINES = 4
+LANGUAGE_FILTER_COLUMN_SPLIT_MIN_RATIO = 0.25
+_INDONESIAN_HINT_TOKENS = {
+    "dan",
+    "yang",
+    "untuk",
+    "dengan",
+    "pada",
+    "dari",
+    "tidak",
+    "akan",
+    "adalah",
+    "karyawan",
+    "cuti",
+    "izin",
+}
+
+try:
+    from langdetect import detect as _langdetect_detect  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    _langdetect_detect = None
 
 
 def _line_sort_key(line: Dict[str, Any]) -> tuple[float, float]:
@@ -76,6 +100,115 @@ def _build_ocr_narrative_lines(textract_lines: Iterable[Dict[str, Any]]) -> List
             }
         )
     return narrative_lines
+
+
+def kmeans_column_clustering(x_centers: List[float], k: int = 2, random_state: int = 42) -> tuple[List[int], List[float]]:
+    """Cluster line x-centers into columns and return left->right labels.
+
+    This follows the exact approach from the previous reference function:
+    sklearn KMeans in 1D, then remap cluster IDs based on sorted centers.
+    """
+
+    if not x_centers:
+        return [], []
+    if len(x_centers) < k:
+        center = float(x_centers[0])
+        return [0 for _ in x_centers], [center, center]
+
+    X = np.array(x_centers, dtype=float).reshape(-1, 1)
+    km = KMeans(n_clusters=k, n_init="auto", random_state=random_state)
+    labels = km.fit_predict(X)
+
+    centers = km.cluster_centers_.reshape(-1)
+    order = np.argsort(centers)
+    remap = {int(old): int(new) for new, old in enumerate(order)}
+    remapped_labels = np.array([remap[int(label)] for label in labels], dtype=int)
+    sorted_centers = [float(centers[int(idx)]) for idx in order]
+    return remapped_labels.tolist(), sorted_centers
+
+
+def _detect_language_code(text: str) -> str:
+    """Detect language code for right-column text.
+
+    The optional ``langdetect`` package is used when present. If unavailable,
+    this falls back to a compact Indonesian keyword heuristic.
+    """
+
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return "unknown"
+
+    if _langdetect_detect is not None:
+        try:
+            return _langdetect_detect(cleaned)
+        except Exception:
+            logger.debug("langdetect failed; falling back to Indonesian keyword heuristic")
+
+    words = re.findall(r"[a-zA-Z]+", cleaned.lower())
+    if not words:
+        return "unknown"
+    id_hits = sum(1 for token in words if token in _INDONESIAN_HINT_TOKENS)
+    return "id" if id_hits >= max(1, len(words) // 12) else "non-id"
+
+
+def _filter_multilingual_two_columns(
+    narrative_lines: List[Dict[str, Any]],
+    *,
+    page_width: float,
+    page_number: int,
+    source_mode: str,
+) -> List[Dict[str, Any]]:
+    """Apply bilingual two-column filtering on one page of narrative lines."""
+
+    if len(narrative_lines) < LANGUAGE_FILTER_MIN_LINES:
+        return narrative_lines
+
+    x_centers = [float(line.get("hanging_x", line.get("min_x", 0.0))) for line in narrative_lines]
+    labels, centers = kmeans_column_clustering(x_centers, k=2, random_state=42)
+    center_gap = abs(float(centers[0]) - float(centers[1]))
+    split_threshold = LANGUAGE_FILTER_COLUMN_SPLIT_MIN_RATIO * max(page_width, 1.0)
+    if center_gap < split_threshold:
+        logger.debug(
+            "Skipping bilingual column filter on near single-column page",
+            extra={
+                "page": page_number,
+                "source_mode": source_mode,
+                "center_gap": round(center_gap, 2),
+                "split_threshold": round(split_threshold, 2),
+            },
+        )
+        return narrative_lines
+
+    # Labels are already remapped to left(0) -> right(1).
+    right_label = 1
+    right_lines = [line for idx, line in enumerate(narrative_lines) if labels[idx] == right_label]
+    right_text = "\n".join(str(line.get("text") or "").strip() for line in right_lines if line.get("text")).strip()
+    if not right_text:
+        logger.debug(
+            "No right-column text detected; keeping full page",
+            extra={"page": page_number, "source_mode": source_mode},
+        )
+        return narrative_lines
+
+    detected_lang = _detect_language_code(right_text)
+    logger.info(
+        "Detected right-column language",
+        extra={"page": page_number, "source_mode": source_mode, "detected_language": detected_lang},
+    )
+    if detected_lang == "id":
+        return narrative_lines
+
+    filtered_lines = [line for idx, line in enumerate(narrative_lines) if labels[idx] != right_label]
+    logger.info(
+        "Right column is not Indonesian; keeping left column only",
+        extra={
+            "page": page_number,
+            "source_mode": source_mode,
+            "original_lines": len(narrative_lines),
+            "kept_lines": len(filtered_lines),
+        },
+    )
+    return filtered_lines or narrative_lines
 
 
 def _apply_scanned_pdf_ocr_fallback(
@@ -129,6 +262,10 @@ def _apply_scanned_pdf_ocr_fallback(
             continue
         lines_by_page.setdefault(page_number, []).append(line)
 
+    config = load_config(profile)
+    multilingual_filter_enabled = getattr(config, "enable_multilingual_column_filter", True)
+
+    textract_pages_updated = False
     for page in pages_output:
         if len(page.get("narrative_text", "")) >= 100 and not page.get("tables"):
             continue
@@ -136,14 +273,21 @@ def _apply_scanned_pdf_ocr_fallback(
         ocr_lines = _build_ocr_narrative_lines(lines_by_page.get(page["page"], []))
         if not ocr_lines:
             continue
+        if multilingual_filter_enabled:
+            ocr_lines = _filter_multilingual_two_columns(
+                ocr_lines,
+                page_width=OCR_GEOMETRY_SCALE,
+                page_number=page["page"],
+                source_mode="ocr",
+            )
 
         page["narrative_lines"] = ocr_lines
         page["narrative_text"] = "\n".join(line["text"] for line in ocr_lines).strip()
         page["ocr_used"] = True
         page["ocr_engine"] = "textract"
+        textract_pages_updated = True
 
-    config = load_config(profile)
-    if getattr(config, "use_gemini_chunking", True):
+    if textract_pages_updated and getattr(config, "use_gemini_chunking", True):
         logger.debug(
             "Applying Gemini chunking to OCR-derived narrative text"
         )
@@ -226,6 +370,8 @@ def get_page_elements(
     the same pass so callers only need a single extraction entry point.
     """
     pdf_name = Path(pdf_path).name
+    config = load_config(profile)
+    multilingual_filter_enabled = getattr(config, "enable_multilingual_column_filter", True)
     logger.info("Scanning PDF for tables and narrative", extra={"pdf": pdf_name})
     pages_output = []
     with pdfplumber.open(pdf_path) as pdf:
@@ -513,7 +659,15 @@ def get_page_elements(
                     "trail_num_token": trail_num_token,  # NEW
                 })
 
-            # 5) Plain text (compat) + tables normalization
+            # 5) Optional bilingual two-column filtering + plain text (compat)
+            if multilingual_filter_enabled:
+                narrative_lines = _filter_multilingual_two_columns(
+                    narrative_lines,
+                    page_width=page_width,
+                    page_number=pidx,
+                    source_mode="pdfplumber",
+                )
+
             narrative_text = "\n".join(nl["text"] for nl in narrative_lines).strip()
             table_records = []
             for t in tables:

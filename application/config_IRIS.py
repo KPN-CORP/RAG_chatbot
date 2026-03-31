@@ -23,6 +23,9 @@ gemini_chat_model = "models/gemini-2.5-flash-lite"  # pick the chat model you wa
 gemini_image_model = "models/gemini-2.5-flash" 
 # When True, OCR-derived pages are hierarchically chunked with Gemini before ingest.
 use_gemini_chunking = False
+# When True, bilingual two-column pages keep only the left column when the
+# detected right-column language is non-Indonesian.
+enable_multilingual_column_filter = True
 embedding_model_name = "models/gemini-embedding-001"  # embedding model for Gemini
 semantic_embedding_model_name = "LazarusNLP/all-indo-e5-small-v4"  # embedding model for semantic search
 
