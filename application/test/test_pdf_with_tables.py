@@ -1,6 +1,48 @@
 import sys
 import types
 
+if "numpy" not in sys.modules:
+    numpy_stub = types.ModuleType("numpy")
+
+    class _ArrayLike(list):
+        def reshape(self, *_args, **_kwargs):
+            return self
+
+        def astype(self, *_args, **_kwargs):
+            return self
+
+        def tolist(self):
+            return list(self)
+
+    numpy_stub.array = lambda values, dtype=None: _ArrayLike(values)
+    numpy_stub.argsort = lambda values: _ArrayLike(sorted(range(len(values)), key=lambda i: values[i]))
+    sys.modules["numpy"] = numpy_stub
+
+if "sklearn" not in sys.modules:
+    sklearn_module = types.ModuleType("sklearn")
+    sklearn_cluster = types.ModuleType("sklearn.cluster")
+
+    class _DummyKMeans:
+        def __init__(self, n_clusters=2, n_init="auto", random_state=42):
+            self.n_clusters = n_clusters
+            self.n_init = n_init
+            self.random_state = random_state
+            self.cluster_centers_ = []
+
+        def fit_predict(self, X):
+            values = [float(v[0] if isinstance(v, (list, tuple)) else v) for v in X]
+            pivot = sum(values) / len(values)
+            labels = [0 if v <= pivot else 1 for v in values]
+            left = [v for v, label in zip(values, labels) if label == 0] or [pivot]
+            right = [v for v, label in zip(values, labels) if label == 1] or [pivot]
+            self.cluster_centers_ = _ArrayLike([sum(left) / len(left), sum(right) / len(right)])
+            return labels
+
+    sklearn_cluster.KMeans = _DummyKMeans
+    sklearn_module.cluster = sklearn_cluster
+    sys.modules["sklearn"] = sklearn_module
+    sys.modules["sklearn.cluster"] = sklearn_cluster
+
 # Provide a lightweight pdfplumber stub so the module can import without the
 # optional dependency installed in the test environment. Each test replaces
 # ``pdfplumber.open`` with a fake implementation tailored to the scenario.
@@ -329,3 +371,73 @@ def test_apply_scanned_pdf_ocr_fallback_skips_non_textract_ocr_pages(monkeypatch
 
     assert called["count"] == 0
     assert result[0]["ocr_engine"] == "gemini"
+
+
+def test_multilingual_column_filter_keeps_left_for_non_indonesian_right():
+    lines = [
+        {"text": "Kebijakan cuti", "hanging_x": 120.0, "min_x": 120.0},
+        {"text": "Berlaku untuk karyawan", "hanging_x": 120.0, "min_x": 120.0},
+        {"text": "Leave policy", "hanging_x": 640.0, "min_x": 640.0},
+        {"text": "Applies to employees", "hanging_x": 640.0, "min_x": 640.0},
+    ]
+
+    filtered = pdf_with_tables._filter_multilingual_two_columns(
+        lines,
+        page_width=1000.0,
+        page_number=1,
+        source_mode="pdfplumber",
+    )
+
+    assert [line["text"] for line in filtered] == [
+        "Kebijakan cuti",
+        "Berlaku untuk karyawan",
+    ]
+
+
+def test_multilingual_column_filter_keeps_all_for_indonesian_right(monkeypatch):
+    lines = [
+        {"text": "Judul", "hanging_x": 120.0, "min_x": 120.0},
+        {"text": "Isi kiri", "hanging_x": 120.0, "min_x": 120.0},
+        {"text": "Terjemahan", "hanging_x": 640.0, "min_x": 640.0},
+        {"text": "dan untuk karyawan", "hanging_x": 640.0, "min_x": 640.0},
+    ]
+
+    monkeypatch.setattr(pdf_with_tables, "_langdetect_detect", lambda _text: "id")
+    filtered = pdf_with_tables._filter_multilingual_two_columns(
+        lines,
+        page_width=1000.0,
+        page_number=2,
+        source_mode="ocr",
+    )
+    assert len(filtered) == 4
+
+
+def test_get_page_elements_can_disable_multilingual_filter(monkeypatch):
+    page = _DummyPage(width=1000, height=1000, tables=[])
+    page.extract_words = lambda **_kwargs: [
+        {"text": "Kebijakan", "x0": 100, "x1": 180, "top": 10, "bottom": 20},
+        {"text": "kiri", "x0": 182, "x1": 220, "top": 10, "bottom": 20},
+        {"text": "English", "x0": 620, "x1": 680, "top": 10, "bottom": 20},
+        {"text": "right", "x0": 682, "x1": 730, "top": 10, "bottom": 20},
+        {"text": "karyawan", "x0": 100, "x1": 180, "top": 40, "bottom": 50},
+        {"text": "dan", "x0": 620, "x1": 650, "top": 40, "bottom": 50},
+    ]
+    dummy_pdf = _DummyPDF([page])
+
+    monkeypatch.setattr(
+        pdf_with_tables,
+        "pdfplumber",
+        types.SimpleNamespace(open=lambda _path: dummy_pdf),
+    )
+    monkeypatch.setattr(pdf_with_tables, "_same_line", lambda a, b, tol=3.0: abs(float(a["top"]) - float(b["top"])) <= 2.0)
+    monkeypatch.setattr(
+        pdf_with_tables,
+        "load_config",
+        lambda *_args, **_kwargs: types.SimpleNamespace(
+            use_gemini_chunking=False,
+            enable_multilingual_column_filter=False,
+        ),
+    )
+
+    pages = pdf_with_tables.get_page_elements("placeholder.pdf", ocr_fallback=False)
+    assert "English right" in pages[0]["narrative_text"]
