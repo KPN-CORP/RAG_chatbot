@@ -624,6 +624,8 @@ def build_chunks_from_pages(
         gemini_chunks = pg.get("gemini_chunks")
         gemini_rules = pg.get("gemini_rules")
         page_had_gemini = bool(gemini_chunks or gemini_rules)
+        if not page_had_gemini:
+            logger.debug(f"Processing page {page_no} with legacy chunking")
 
         # Always include Gemini chunks but still let the semantic/atomic pipeline
         # inspect the page so section carry-over logic sees a continuous stream

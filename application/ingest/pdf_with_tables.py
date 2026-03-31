@@ -581,7 +581,7 @@ def extract_pdf_content(file, use_gemini: str = "use", profile: str = ""):
 '''
 Use this as a reference for bilinguan page
 '''
-
+'''
 def extract_document_and_cluster_language(
     pdf_file_path: str,
     s3_key: str,
@@ -650,16 +650,6 @@ def extract_document_and_cluster_language(
         ]
     
     # mid_x = float(centers[1])*0.5 + float(centers[0])*0.5
-    '''
-    # old logic
-    right_column_text = "\n".join([Line.text for Line in Lines if Line.page>=2 and Line.page<5 and Line.column_position=='right']).strip()
-    logger.debug("Detecting language of right column text")
-    detected_lang = langdetect.detect(right_column_text)
-    if detected_lang != 'id':
-        return "\n".join([Line.text for Line in Lines if Line.column_position == 'left']).strip() # return left column only
-    
-    return "\n".join([Line.text for Line in Lines]).strip() # return all text
-    '''
 
     for i, line_page in enumerate(Line_pages, start=1):
         if not line_page:
@@ -684,3 +674,4 @@ def extract_document_and_cluster_language(
         (page_num, pages_by_number.get(page_num, ""))
         for page_num in range(1, total_pages + 1)
     ]
+'''

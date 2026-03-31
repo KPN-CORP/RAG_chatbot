@@ -30,7 +30,7 @@ def load_config(profile: str = "") -> ModuleType:
 
     if not profile:
         config = _import_config("config")
-        logger.info(
+        logger.debug(
             "Loaded default config module",
             extra={
                 "resolved_config_module": getattr(config, "__name__", "config"),
@@ -43,7 +43,7 @@ def load_config(profile: str = "") -> ModuleType:
     logger.info(f"Attempting to load config for profile {profile}; module: {module_name}")
     try:
         config = _import_config(module_name)
-        logger.info(
+        logger.debug(
             "Loaded profile config module",
             extra={
                 "profile": profile,
