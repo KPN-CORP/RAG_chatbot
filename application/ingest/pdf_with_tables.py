@@ -95,11 +95,19 @@ def _apply_scanned_pdf_ocr_fallback(
     """
 
     empty_pages = [
-        page for page in pages_output if not page.get("narrative_text") and not page.get("tables")
+        page for page in pages_output if len(page.get("narrative_text")) < 100 and not page.get("tables")
     ]
     if not empty_pages:
+        logger.debug(
+            "No fully empty pages detected after initial extraction; skipping OCR fallback",
+        )
         return pages_output
 
+    logger.debug(
+        "Detected %d empty pages after initial extraction; checking OCR fallback",
+        len(empty_pages),
+        extra={"pdf": Path(pdf_path).name, "empty_pages": [p["page"] for p in empty_pages]},
+    )
     s3_bucket = os.getenv("S3_BUCKET_NAME")
     if not s3_bucket:
         logger.warning(
@@ -108,7 +116,7 @@ def _apply_scanned_pdf_ocr_fallback(
         )
         return pages_output
 
-    logger.info(
+    logger.debug(
         "Running Textract OCR fallback for scanned PDF pages",
         extra={"pdf": Path(pdf_path).name, "empty_pages": [p["page"] for p in empty_pages]},
     )
@@ -122,7 +130,7 @@ def _apply_scanned_pdf_ocr_fallback(
         lines_by_page.setdefault(page_number, []).append(line)
 
     for page in pages_output:
-        if page.get("narrative_text") or page.get("tables"):
+        if len(page.get("narrative_text", "")) >= 100 and not page.get("tables"):
             continue
 
         ocr_lines = _build_ocr_narrative_lines(lines_by_page.get(page["page"], []))
@@ -136,6 +144,9 @@ def _apply_scanned_pdf_ocr_fallback(
 
     config = load_config(profile)
     if getattr(config, "use_gemini_chunking", True):
+        logger.debug(
+            "Applying Gemini chunking to OCR-derived narrative text"
+        )
         pages_output = apply_gemini_ocr_chunking(pages_output, profile=profile)
 
     return pages_output
@@ -566,3 +577,110 @@ def extract_pdf_content(file, use_gemini: str = "use", profile: str = ""):
         use_gemini_for_complex=True,
     )
     return pdf_pages
+
+'''
+Use this as a reference for bilinguan page
+'''
+
+def extract_document_and_cluster_language(
+    pdf_file_path: str,
+    s3_key: str,
+    s3_bucket: Optional[str] = None,
+) -> List[Tuple[int, str]]:
+    """Extract OCR text for scanned PDFs as page-numbered tuples.
+
+    Returns a list of (page_number, page_text) entries to match the poppler
+    extraction format used elsewhere in the pipeline. Missing pages are filled
+    with empty strings to preserve the original page count when possible.
+    """
+    logger.info("Running OCR Extraction")
+    # if pdf_has_extractable_text(pdf_file_path):
+    #     logger.debug("Using poppler for text-based PDF extraction")
+    #     return extract_pdf_text_with_poppler(pdf_file_path)
+    s3_bucket = os.getenv("S3_BUCKET_NAME") if not s3_bucket else s3_bucket
+    if not s3_bucket:
+        logger.error("S3 Bucket name is not defined!")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="S3 Bucket name is not defined!",
+        )
+ 
+    logger.debug("Using Textract OCR for scanned PDF extraction")
+    resp = _extract_textract_lines(
+        pdf_path=pdf_file_path, s3_bucket=s3_bucket, s3_key=s3_key
+    )
+    logger.debug("Extracted doc with %d LINE blocks", len(resp))
+    Lines, __ = create_blocks(resp)
+    if not Lines:
+        logger.debug("No LINE blocks returned from OCR")
+        return []
+    # Prefer the real PDF page count so the output mirrors poppler extraction.
+    total_pages = 0
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(pdf_file_path) as pdf:
+            total_pages = len(pdf.pages)
+    except Exception as exc:
+        logger.warning("Failed to read PDF page count: %s", exc)
+    x_centers = [Line.left + Line.width / 4 for Line in Lines]
+    logger.debug("Running K-means for clustering the geometry")
+    labels, centers = kmeans_column_clustering(x_centers, k=2)
+    Line_pages, Lines = get_line_per_page_and_add_position(Lines, labels)
+    # for i, Line in enumerate(Lines):
+    #     label = 'left' if labels[i] == 0 else 'right'
+    #     setattr(Line, 'column_position', label)
+    logger.debug("K-means clustering done")
+
+    if total_pages <= 0:
+        total_pages = max((line.page for line in Lines), default=0)
+    pages_by_number: dict[int, str] = {}
+
+    if float(abs(centers[0] - centers[1])) < 0.25:
+        logger.debug("No multi-column detected, sending whole page")
+        for line_page in Line_pages:
+            if not line_page:
+                continue
+            page_number = line_page[0].page
+            pages_by_number[page_number] = convert_resp_to_text(line_page)
+
+        return [
+            (page_num, pages_by_number.get(page_num, ""))
+            for page_num in range(1, total_pages + 1)
+        ]
+    
+    # mid_x = float(centers[1])*0.5 + float(centers[0])*0.5
+    '''
+    # old logic
+    right_column_text = "\n".join([Line.text for Line in Lines if Line.page>=2 and Line.page<5 and Line.column_position=='right']).strip()
+    logger.debug("Detecting language of right column text")
+    detected_lang = langdetect.detect(right_column_text)
+    if detected_lang != 'id':
+        return "\n".join([Line.text for Line in Lines if Line.column_position == 'left']).strip() # return left column only
+    
+    return "\n".join([Line.text for Line in Lines]).strip() # return all text
+    '''
+
+    for i, line_page in enumerate(Line_pages, start=1):
+        if not line_page:
+            continue
+        right_column_text = "\n".join(
+            [line.text for line in line_page if line.column_position == 'right']
+        ).strip()
+        if right_column_text:
+            detected_lang = langdetect.detect(right_column_text)
+            logger.debug("The right column language in page %d is: %s", i, detected_lang)
+            if detected_lang != 'id':
+                pages_by_number[line_page[0].page] = convert_resp_to_text(line_page, 'left')
+                logger.debug("Sending left column only")
+            else:
+                pages_by_number[line_page[0].page] = convert_resp_to_text(line_page)
+                logger.debug("Sending all column")
+        else:
+            logger.debug("No right column text found on page %d; sending all column", i)
+            pages_by_number[line_page[0].page] = convert_resp_to_text(line_page)
+
+    return [
+        (page_num, pages_by_number.get(page_num, ""))
+        for page_num in range(1, total_pages + 1)
+    ]

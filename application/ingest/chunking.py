@@ -1,6 +1,8 @@
 # ingest/chunking.py
 from __future__ import annotations
 
+import logging
+from logging_config import configure_logging, get_logger
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,6 +22,8 @@ from modules.chunking_utils import (
     _indent_level_for_x,          # NEW
     boundary_join,
 )
+
+logger = logging.getLogger(__name__)
 
 # -----------------------------
 # Public API (what you import)
@@ -625,6 +629,7 @@ def build_chunks_from_pages(
         # inspect the page so section carry-over logic sees a continuous stream
         # of content across pages.
         if gemini_chunks:
+            logger.debug(f"Page {page_no}: Adding {len(gemini_chunks)} Gemini chunks")
             built.extend(
                 gemini_chunks_to_chunks(
                     gemini_chunks,
@@ -634,6 +639,7 @@ def build_chunks_from_pages(
                 )
             )
         if gemini_rules:
+            logger.debug(f"Page {page_no}: Adding {len(gemini_rules)} Gemini rules as chunks")
             built.extend(
                 atomic_rules_to_chunks(
                     gemini_rules,
