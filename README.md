@@ -246,10 +246,10 @@ port in your config module before running ingestion.
 
 ## 6. Folder watcher for automatic Milvus sync
 
-The watcher under [`application/modules/watcher.py`](application/modules/watcher.py) observes the `WATCH_DIR` configured in
-`application/config.py` (default: `assets/`). Its responsibilities are deliberately narrow:
+The watcher under [`application/modules/watcher.py`](application/modules/watcher.py) scans the `WATCH_DIR` configured in
+`application/config.py` (default: `assets/`) on a fixed interval (cron-job style). Its responsibilities are deliberately narrow:
 
-- detect file system changes (create/modify/delete/move) for supported extensions in `VALID_EXTS`;
+- detect create/modify/delete changes for supported extensions in `VALID_EXTS` by diffing scan snapshots;
 - call two hook functions, `upsert_file_to_milvus(file_path)` and `delete_file_from_milvus(file_path)`, to keep Milvus in sync.
 - update the status column in the table named by `KB_DB_TABLE` when a document begins processing (`processing`) and finishes (`done`) for both upserts and deletes, using the subfolder name as the `business_unit` lookup when available.
 
@@ -266,25 +266,24 @@ To enable status updates, set `KB_DATABASE_URL` in your environment (for example
 version supports it (MySQL 8+), or adjust the normalization helpers in `application/modules/kb_status.py` for older
 engines.
 
-Run the watcher from the `application/` directory. You can pass `--profile` to
-target a specific chatbot configuration (for example `config_IRIS.py`):
+Run the watcher from the `application/` directory. Yes, you can still use `--profile` with the cron-style watcher to target a specific chatbot configuration (for example `config_IRIS.py`). You can also tune scan frequency via `--interval-seconds`:
 
 ```bash
 cd application
-python -m modules.watcher --profile IRIS
+python -m modules.watcher --profile IRIS --interval-seconds 15
 ```
 
-To keep the watcher running in the background with log output, use `nohup` and
-redirect stdout/stderr to a file:
+Use Linux `cron` when you want OS-managed scheduling/restarts instead of keeping a long-lived shell process alive with `nohup`.
+
+Example `crontab` entry (runs every minute):
 
 ```bash
-cd application
-nohup python -m modules.watcher --profile IRIS > logs/watcher.log 2>&1 &
+* * * * * cd /workspace/RAG_chatbot/application && /usr/bin/python -m modules.watcher --profile IRIS --run-once >> logs/watcher.log 2>&1
 ```
 
-Stop it with `Ctrl+C` (or terminate the background PID). The debounce worker
-ensures only stable files (unchanged for a couple of seconds) are ingested to
-avoid partial uploads.
+The `--run-once` flag is designed for cron: each cron tick scans, processes create/modify/delete diffs, and exits cleanly.
+
+For an always-on daemon process, you can still run the continuous loop in foreground (or under a process manager). Stop foreground mode with `Ctrl+C`. Each cycle compares file modification timestamps, so updated files are re-upserted and missing files are deleted from Milvus on the next scan.
 
 ## 7. Troubleshooting
 
