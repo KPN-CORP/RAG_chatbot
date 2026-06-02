@@ -278,7 +278,9 @@ Use Linux `cron` when you want OS-managed scheduling/restarts instead of keeping
 Example `crontab` entry (runs every minute):
 
 ```bash
-* * * * * cd /home/hcispanel/nastari_rag/RAG_chatbot/application && /root/miniconda3/envs/rag-chatbot/bin/python -m modules.watcher --profile IRIS --run-once >> logs/watcher.log 2>&1
+* * * * * cd /home/hcispanel/nastari_rag/RAG_chatbot/application && /root/miniconda3/envs/rag-chatbot/bin/python -m modules.watcher --profile IRIS --run-once >> logs/watcher_IRIS.log 2>&1
+* * * * * cd /home/hcispanel/nastari_rag/RAG_chatbot/application && /root/miniconda3/envs/rag-chatbot/bin/python -m modules.watcher --run-once >> logs/watcher.log 2>&1
+* * * * * cd /home/hcispanel/nastari_rag/RAG_chatbot/application && /root/miniconda3/envs/rag-chatbot/bin/python -m modules.watcher --profile RECRUITMENT --run-once >> logs/watcher_RECRUITMENT.log 2>&1
 ```
 
 The `--run-once` flag is designed for cron: each cron tick scans, processes create/modify/delete diffs, and exits cleanly.

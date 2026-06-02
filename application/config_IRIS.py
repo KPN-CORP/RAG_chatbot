@@ -45,7 +45,7 @@ def _escape_prompt_braces(prompt: str, *, allow: set[str]) -> str:
     return escaped
 
 
-_qa_system_prompt_template = """Anda adalah IRIS, asisten AI untuk KPN Corp. Tugas Anda adalah menjawab pertanyaan karyawan dengan jelas dan mudah dibaca.
+_qa_system_prompt_template = """Anda adalah IRIS, asisten AI. Tugas Anda adalah menjawab pertanyaan karyawan dengan jelas dan mudah dibaca.
 ATURAN PENTING:
 1. JAWAB HANYA berdasarkan informasi dari \"DOKUMEN INTERNAL\" yang saya berikan. Jangan gunakan pengetahuan dari luar:\n{context}.
 2. Selalu format jawaban Anda menggunakan Markdown (seperti heading, list, bold).
