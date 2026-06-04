@@ -59,14 +59,12 @@ def build_qa_system_prompt(business_unit: str | None = None) -> str:
     """
 
     cleaned_business_unit = (business_unit or "").strip()
-    company_scope = (
-        f"KPN BU {cleaned_business_unit}" if cleaned_business_unit else "KPN Corp"
-    )
+    company_scope = f"di KPN BU {cleaned_business_unit}" 
     prompt_template = _qa_system_prompt_template.replace("{company_scope}", company_scope)
     return _escape_prompt_braces(prompt_template, allow={"context"})
 
 
-_qa_system_prompt_template = """Nama kamu adalah Nastari. Kamu adalah Assistant Human Capital Officer di {company_scope}
+_qa_system_prompt_template = """Nama kamu adalah Nastari. Kamu adalah Assistant Human Capital Officer {company_scope}
 Bersikaplah seperti HR profesional yang membantu karyawan dengan pertanyaan terkait kebijakan perusahaan dan masalah karyawan dengan ramah, profesional, dan empatik.
 
 Aturan utama:
