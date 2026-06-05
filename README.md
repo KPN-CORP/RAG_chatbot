@@ -266,26 +266,79 @@ To enable status updates, set `KB_DATABASE_URL` in your environment (for example
 version supports it (MySQL 8+), or adjust the normalization helpers in `application/modules/kb_status.py` for older
 engines.
 
-Run the watcher from the `application/` directory. Yes, you can still use `--profile` with the cron-style watcher to target a specific chatbot configuration (for example `config_IRIS.py`). You can also tune scan frequency via `--interval-seconds`:
+Run the watcher from the `application/` directory. The default profile loads `application/config.py`; pass `--profile IRIS` or another profile only when you want the matching `config_<PROFILE>.py`. You can tune scan frequency via `--interval-seconds`:
 
 ```bash
 cd application
-python -m modules.watcher --profile IRIS --interval-seconds 15
+python -m modules.watcher --interval-seconds 15                 # default profile / company_policies
+python -m modules.watcher --profile IRIS --interval-seconds 15  # IRIS profile / internal_document
 ```
 
-Use Linux `cron` when you want OS-managed scheduling/restarts instead of keeping a long-lived shell process alive with `nohup`.
+### Recommended production mode: continuous watcher
 
-Example `crontab` entry (runs every minute):
+For reliable create/modify/delete detection, run the watcher continuously with `nohup`, `systemd`, or another process manager. The continuous loop keeps the previous scan snapshot in memory, so a file added, changed, or removed between scans is detected on the next scan.
+
+Default profile example:
 
 ```bash
-* * * * * cd /home/hcispanel/nastari_rag/RAG_chatbot/application && /root/miniconda3/envs/rag-chatbot/bin/python -m modules.watcher --profile IRIS --run-once >> logs/watcher_IRIS.log 2>&1
-* * * * * cd /home/hcispanel/nastari_rag/RAG_chatbot/application && /root/miniconda3/envs/rag-chatbot/bin/python -m modules.watcher --run-once >> logs/watcher.log 2>&1
-* * * * * cd /home/hcispanel/nastari_rag/RAG_chatbot/application && /root/miniconda3/envs/rag-chatbot/bin/python -m modules.watcher --profile RECRUITMENT --run-once >> logs/watcher_RECRUITMENT.log 2>&1
+mkdir -p /home/hcispanel/nastari_rag/RAG_chatbot/application/logs
+cd /home/hcispanel/nastari_rag/RAG_chatbot/application
+nohup /root/miniconda3/envs/rag-chatbot/bin/python -m modules.watcher \
+  --interval-seconds 15 \
+  >> logs/watcher.log 2>&1 &
 ```
 
-The `--run-once` flag is designed for cron: each cron tick scans, processes create/modify/delete diffs, and exits cleanly.
+IRIS profile example:
 
-For an always-on daemon process, you can still run the continuous loop in foreground (or under a process manager). Stop foreground mode with `Ctrl+C`. Each cycle compares file modification timestamps, so updated files are re-upserted and missing files are deleted from Milvus on the next scan.
+```bash
+mkdir -p /home/hcispanel/nastari_rag/RAG_chatbot/application/logs
+cd /home/hcispanel/nastari_rag/RAG_chatbot/application
+nohup /root/miniconda3/envs/rag-chatbot/bin/python -m modules.watcher \
+  --profile IRIS \
+  --interval-seconds 15 \
+  >> logs/watcher_IRIS.log 2>&1 &
+```
+
+Useful operational commands:
+
+```bash
+ps aux | grep 'modules.watcher' | grep -v grep   # confirm the watcher is running
+tail -f logs/watcher.log                         # follow default-profile watcher logs
+kill <PID>                                       # stop a watcher process
+```
+
+Before switching to `nohup` or `systemd`, disable any existing cron entry for the same profile to avoid duplicate watcher processes and duplicate Milvus operations.
+
+### Cron mode caveat
+
+Linux `cron` can still be used for operational convenience, but the current `--run-once` implementation compares two scans inside the same short-lived process only. It does not persist a snapshot between cron executions. Therefore, a file that is added, modified, or deleted between cron runs may be present or absent in the initial snapshot of the next run and may not be treated as a change.
+
+If you keep cron, understand that it is best-effort with the current code:
+
+```bash
+* * * * * cd /home/hcispanel/nastari_rag/RAG_chatbot/application && /root/miniconda3/envs/rag-chatbot/bin/python -m modules.watcher --run-once >> logs/watcher.log 2>&1
+```
+
+To make cron fully reliable, add persistent snapshot storage for `--run-once`, or prefer continuous mode.
+
+### Log growth and rotation
+
+The application logger writes to stdout/stderr; commands such as `>> logs/watcher.log 2>&1` append those streams to a file. The application does not rotate or archive watcher logs automatically. Use OS log rotation, for example `logrotate`, to prevent unbounded log growth:
+
+```conf
+/home/hcispanel/nastari_rag/RAG_chatbot/application/logs/watcher.log {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+```
+
+### Files in subfolders
+
+The watcher scans subfolders recursively. When a file lives under the first-level subfolder of `WATCH_DIR`, the first folder name becomes the Milvus collection suffix. For example, with default `collection_name = "company_policies"`, a file under `WATCH_DIR/Plantations/Policy.pdf` is ingested into `company_policies_Plantations`; a file directly under `WATCH_DIR` is ingested into `company_policies`. Only the first subfolder is used for the suffix.
 
 ## 7. Troubleshooting
 
