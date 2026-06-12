@@ -2,6 +2,29 @@
 
 This repository contains experimentation notebooks and a production-ready FastAPI service under [`application/`](application/) for a Retrieval Augmented Generation (RAG) HR assistant named **Nastari**. This guide explains how to run, stop, and use the service exposed by the `application/` package.
 
+## Application stack and RAG flow
+
+The application is built from these main components:
+
+| Component | Role in the system |
+|-----------|--------------------|
+| FastAPI | Exposes the HTTP endpoints for creating sessions, asking questions, and uploading documents. |
+| LangChain | Orchestrates prompts, chat history, retrievers, embeddings, and the RAG chain. |
+| Redis | Stores chat history and session memory so conversations can continue across requests. |
+| Milvus DB | Stores document embeddings as the vector database used for semantic retrieval. |
+| Gemini embeddings | Converts document text and query text into vectors for Milvus search. |
+| Gemini 2.5 Flash LLM | Generates final answers from the retrieved context and chat history. |
+| pdfplumber | Reads text and table structure from PDF files during ingestion. |
+| Semantic + atomic hierarchical chunking | Splits ingested documents into retrieval-friendly chunks while preserving headings, breadcrumbs, and atomic rules. |
+
+High-level flow:
+
+1. Documents are read from PDF files with `pdfplumber` and the ingestion pipeline.
+2. The text is split with semantic + atomic hierarchical chunking so each chunk is small enough for retrieval but still carries document hierarchy context.
+3. Gemini embeddings convert each chunk from text to a vector, then the vectors and metadata are stored in Milvus DB.
+4. When a user asks a question through the FastAPI endpoint, LangChain loads Redis chat history, embeds the question, retrieves matching chunks from Milvus DB, and sends the prompt plus context to the Gemini 2.5 Flash LLM.
+5. The API returns the generated answer and, for profiles that expose them, the supporting sources.
+
 ## 1. Prerequisites
 
 1. **Python environment**
