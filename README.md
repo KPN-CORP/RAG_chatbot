@@ -13,7 +13,7 @@ The application is built from these main components:
 | Redis | Stores chat history and session memory so conversations can continue across requests. |
 | Milvus DB | Stores document embeddings as the vector database used for semantic retrieval. |
 | Gemini embeddings | Converts document text and query text into vectors for Milvus search. |
-| Gemini 2.5 Flash LLM | Generates final answers from the retrieved context and chat history. |
+| Gemini chat LLM | Generates final answers from retrieved context and chat history using `models/gemini-2.5-flash-lite` by default; table/image extraction uses `models/gemini-2.5-flash`. |
 | pdfplumber | Reads text and table structure from PDF files during ingestion. |
 | Semantic + atomic hierarchical chunking | Splits ingested documents into retrieval-friendly chunks while preserving headings, breadcrumbs, and atomic rules. |
 
@@ -22,7 +22,7 @@ High-level flow:
 1. Documents are read from PDF files with `pdfplumber` and the ingestion pipeline.
 2. The text is split with semantic + atomic hierarchical chunking so each chunk is small enough for retrieval but still carries document hierarchy context.
 3. Gemini embeddings convert each chunk from text to a vector, then the vectors and metadata are stored in Milvus DB.
-4. When a user asks a question through the FastAPI endpoint, LangChain loads Redis chat history, embeds the question, retrieves matching chunks from Milvus DB, and sends the prompt plus context to the Gemini 2.5 Flash LLM.
+4. When a user asks a question through the FastAPI endpoint, LangChain loads Redis chat history, embeds the question, retrieves matching chunks from Milvus DB, and sends the prompt plus context to the configured Gemini chat LLM (`models/gemini-2.5-flash-lite` by default).
 5. The API returns the generated answer and, for profiles that expose them, the supporting sources.
 
 ## 1. Prerequisites
