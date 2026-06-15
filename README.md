@@ -2,6 +2,29 @@
 
 This repository contains experimentation notebooks and a production-ready FastAPI service under [`application/`](application/) for a Retrieval Augmented Generation (RAG) HR assistant named **Nastari**. This guide explains how to run, stop, and use the service exposed by the `application/` package.
 
+## Application stack and RAG flow
+
+The application is built from these main components:
+
+| Component | Role in the system |
+|-----------|--------------------|
+| FastAPI | Exposes the HTTP endpoints for creating sessions, asking questions, and uploading documents. |
+| LangChain | Orchestrates prompts, chat history, retrievers, embeddings, and the RAG chain. |
+| Redis | Stores chat history and session memory so conversations can continue across requests. |
+| Milvus DB | Stores document embeddings as the vector database used for semantic retrieval. |
+| Gemini embeddings | Converts document text and query text into vectors for Milvus search. |
+| Gemini chat LLM | Generates final answers from retrieved context and chat history using `models/gemini-2.5-flash-lite` by default; table/image extraction uses `models/gemini-2.5-flash`. |
+| pdfplumber | Reads text and table structure from PDF files during ingestion. |
+| Semantic + atomic hierarchical chunking | Splits ingested documents into retrieval-friendly chunks while preserving headings, breadcrumbs, and atomic rules. |
+
+High-level flow:
+
+1. Documents are read from PDF files with `pdfplumber` and the ingestion pipeline.
+2. The text is split with semantic + atomic hierarchical chunking so each chunk is small enough for retrieval but still carries document hierarchy context.
+3. Gemini embeddings convert each chunk from text to a vector, then the vectors and metadata are stored in Milvus DB.
+4. When a user asks a question through the FastAPI endpoint, LangChain loads Redis chat history, embeds the question, retrieves matching chunks from Milvus DB, and sends the prompt plus context to the configured Gemini chat LLM (`models/gemini-2.5-flash-lite` by default).
+5. The API returns the generated answer and, for profiles that expose them, the supporting sources.
+
 ## 1. Prerequisites
 
 1. **Python environment**
@@ -24,7 +47,54 @@ This repository contains experimentation notebooks and a production-ready FastAP
    - `INGEST_UPLOAD_TOKEN` – shared secret required when calling the document upload endpoint.
    - Optionally, override other settings by exporting variables consumed in `application/config.py`.
 
-## 2. Running the FastAPI server
+## 2. Running Redis and Milvus with Docker Compose
+
+The repository includes [`application/docker-compose.yml`](application/docker-compose.yml) for the infrastructure that the FastAPI app expects locally. It starts:
+
+- Milvus standalone on `localhost:19530` with its health/metrics endpoint on `localhost:9091`.
+- Redis on `localhost:6379`.
+- Milvus dependencies: etcd, MinIO object storage on `localhost:9000`, and the MinIO console on `localhost:9001`.
+
+> The compose file does **not** start the FastAPI application container. Run the API with Uvicorn as shown in the next section after the Docker Compose services are healthy.
+
+1. Start the services from the repository root:
+
+   ```bash
+   docker compose -f application/docker-compose.yml up -d
+   ```
+
+   By default, persistent data is written under `application/volumes/` because the compose file is located in `application/`. To store Docker data somewhere else, set `DOCKER_VOLUME_DIRECTORY` before starting the stack:
+
+   ```bash
+   DOCKER_VOLUME_DIRECTORY=/absolute/path/to/rag-data \
+     docker compose -f application/docker-compose.yml up -d
+   ```
+
+2. Check that all containers are running and healthy:
+
+   ```bash
+   docker compose -f application/docker-compose.yml ps
+   docker compose -f application/docker-compose.yml logs -f standalone redis
+   ```
+
+3. Export the application secrets in the shell where you will run Uvicorn:
+
+   ```bash
+   export GEMINI_API_KEY="<your-gemini-api-key>"
+   export INGEST_UPLOAD_TOKEN="<shared-upload-token>"
+   ```
+
+   The default application config already points to the compose-published Redis and Milvus endpoints (`localhost:6379` and `127.0.0.1:19530`). If you run the API from another machine or container, update the corresponding settings in `application/config.py` or the relevant `config_<PROFILE>.py` file.
+
+4. Stop the stack when you are done:
+
+   ```bash
+   docker compose -f application/docker-compose.yml down
+   ```
+
+   To remove the persisted Redis, Milvus, etcd, and MinIO data as well, delete the directory used by `DOCKER_VOLUME_DIRECTORY` (or `application/volumes/` if you used the default).
+
+## 3. Running the FastAPI server
 
 1. Navigate into the `application/` directory.
 
@@ -57,12 +127,12 @@ This repository contains experimentation notebooks and a production-ready FastAP
 - The `IRIS` profile returns a slimmed down chat payload (`{"answer": ..., "not_found": ...}`) without the `sources` key, while other profiles continue returning `sources` alongside the answer.
 - To add a new persona/configuration, drop a file like `application/config_FOOBOT.py` alongside the existing config files using the same variable names.
 
-## 3. Stopping the server
+## 4. Stopping the server
 
 - Press `Ctrl+C` in the terminal where Uvicorn is running to gracefully stop the API.
 - If running as a background process (e.g., via systemd, Docker, or `nohup`), stop the process using the respective tooling (`systemctl stop`, `docker stop`, `kill <pid>`, etc.).
 
-## 4. Using the API
+## 5. Using the API
 
 Below is a minimal sequence using `curl`. Replace placeholders with your own values.
 
@@ -201,7 +271,7 @@ Below is a minimal sequence using `curl`. Replace placeholders with your own val
 
    - Sessions are stored in Redis with a TTL (`SESSION_TTL_SECONDS` in `config.py`). After expiration, create a new session before sending further questions.
 
-## 5. Maintenance scripts
+## 6. Maintenance scripts
 
 The `application/` directory also contains utilities that can be invoked manually:
 
@@ -244,7 +314,7 @@ Collections inherit the description from `config.collection_description` and use
 an HNSW/COSINE index by default. You can override the collection name, host, or
 port in your config module before running ingestion.
 
-## 6. Folder watcher for automatic Milvus sync
+## 7. Folder watcher for automatic Milvus sync
 
 The watcher under [`application/modules/watcher.py`](application/modules/watcher.py) scans the `WATCH_DIR` configured in
 `application/config.py` (default: `assets/`) on a fixed interval (cron-job style). Its responsibilities are deliberately narrow:
@@ -340,7 +410,7 @@ The application logger writes to stdout/stderr; commands such as `>> logs/watche
 
 The watcher scans subfolders recursively. When a file lives under the first-level subfolder of `WATCH_DIR`, the first folder name becomes the Milvus collection suffix. For example, with default `collection_name = "company_policies"`, a file under `WATCH_DIR/Plantations/Policy.pdf` is ingested into `company_policies_Plantations`; a file directly under `WATCH_DIR` is ingested into `company_policies`. Only the first subfolder is used for the suffix.
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 | Issue | Suggested action |
 |-------|------------------|
