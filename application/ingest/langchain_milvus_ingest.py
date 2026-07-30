@@ -357,16 +357,30 @@ def ingest_pages_to_milvus(
     milvus_port: int = 19530,
     embed_batch_size: int = 32,
     insert_batch_size: int = 64,
-    enable_semantic_fallback: bool = True,
-    sim_threshold: float = 0.82,
-    use_percentile: bool = False,
-    percentile: int = 90,
+    enable_semantic_fallback: Optional[bool] = None,
+    sim_threshold: Optional[float] = None,
+    use_percentile: Optional[bool] = None,
+    percentile: Optional[int] = None,
     dry_run: bool = False,
 ) -> Tuple[int, int]:
     """
     Build chunks with universal semantic grouping + (optional) long-text fallback,
     then embed & store in Milvus.
+
+    Chunking parameters default to the active profile config when not passed
+    explicitly, so they can be tuned in ``config.py`` without code changes.
     """
+
+    # Resolve chunking parameters from config unless the caller overrode them.
+    if enable_semantic_fallback is None:
+        enable_semantic_fallback = getattr(config, "chunk_enable_semantic_fallback", True)
+    if sim_threshold is None:
+        sim_threshold = getattr(config, "chunk_sim_threshold", 0.82)
+    if use_percentile is None:
+        use_percentile = getattr(config, "chunk_use_percentile", False)
+    if percentile is None:
+        percentile = getattr(config, "chunk_percentile", 90)
+    semantic_fallback_max_chars = getattr(config, "chunk_semantic_fallback_max_chars", 1000)
 
     chunking_embeddings, gemini_embeddings = _build_embeddings(config)
 
@@ -376,7 +390,7 @@ def ingest_pages_to_milvus(
         source=source,
         embeddings_for_semantic=chunking_embeddings,
         enable_semantic_fallback=enable_semantic_fallback,
-        semantic_fallback_max_chars=1000,
+        semantic_fallback_max_chars=semantic_fallback_max_chars,
         sim_threshold=sim_threshold,
         use_percentile=use_percentile,
         percentile=percentile,
@@ -407,13 +421,17 @@ def ingest_text_document(
     milvus_port: int = 19530,
     embed_batch_size: int = 32,
     insert_batch_size: int = 64,
-    enable_semantic_fallback: bool = True,
-    sim_threshold: float = 0.82,
-    use_percentile: bool = False,
-    percentile: int = 90,
+    enable_semantic_fallback: Optional[bool] = None,
+    sim_threshold: Optional[float] = None,
+    use_percentile: Optional[bool] = None,
+    percentile: Optional[int] = None,
     dry_run: bool = False,
 ) -> Tuple[int, int]:
-    """Ingest raw text content, preferring Q&A chunking when applicable."""
+    """Ingest raw text content, preferring Q&A chunking when applicable.
+
+    Chunking parameters left as ``None`` are resolved from the profile config by
+    :func:`ingest_pages_to_milvus`.
+    """
 
     if not text:
         return 0, 0

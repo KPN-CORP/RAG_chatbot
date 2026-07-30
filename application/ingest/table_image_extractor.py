@@ -25,7 +25,10 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
+import sys
 import textwrap
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -303,6 +306,38 @@ def _extract_json_fragment(text: str) -> Optional[Any]:
         return None
 
 
+@lru_cache(maxsize=1)
+def _resolve_poppler_path() -> Optional[str]:
+    """Locate Poppler's binaries so ``pdf2image`` works regardless of activation.
+
+    ``pdf2image`` shells out to ``pdfinfo``/``pdftoppm``. When the app is launched
+    without activating the conda env (service, cron, direct interpreter), the
+    env's ``Library/bin`` (Windows) or ``bin`` (POSIX) is not on PATH and Gemini
+    table extraction silently fails, falling back to lower-quality parsing. We
+    first honour PATH, then fall back to the interpreter's own env dir. The
+    ``POPPLER_PATH`` env var overrides everything.
+    """
+
+    override = os.environ.get("POPPLER_PATH")
+    if override and os.path.isdir(override):
+        return override
+
+    # Already on PATH → let pdf2image find it (return None = default behaviour).
+    if shutil.which("pdfinfo") or shutil.which("pdftoppm"):
+        return None
+
+    probe = "pdfinfo.exe" if os.name == "nt" else "pdfinfo"
+    candidates = [
+        os.path.join(sys.prefix, "Library", "bin"),  # Windows conda layout
+        os.path.join(sys.prefix, "bin"),             # POSIX conda/venv layout
+    ]
+    for candidate in candidates:
+        if os.path.isfile(os.path.join(candidate, probe)):
+            return candidate
+
+    return None  # Not found; pdf2image will raise its usual informative error.
+
+
 def _page_to_image(pdf_path: Path, page_number: int, dpi: int = 300) -> Path:
     """Render a single PDF page to a PNG image and return the image path."""
 
@@ -312,7 +347,11 @@ def _page_to_image(pdf_path: Path, page_number: int, dpi: int = 300) -> Path:
         raise RuntimeError("pdf2image is required for image-based extraction") from exc
 
     images = convert_from_path(
-        str(pdf_path), dpi=dpi, first_page=page_number, last_page=page_number
+        str(pdf_path),
+        dpi=dpi,
+        first_page=page_number,
+        last_page=page_number,
+        poppler_path=_resolve_poppler_path(),
     )
     if not images:
         raise ValueError(f"Failed to render page {page_number} from {pdf_path}")

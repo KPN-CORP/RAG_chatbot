@@ -1,0 +1,62 @@
+# Pinned dependencies for the Nastari RAG service (application/).
+# The langchain family MUST stay on the 0.3 line: the code uses the classic
+# namespaces (langchain.output_parsers, langchain.embeddings,
+# langchain.retrievers.base, langchain.schema) that langchain 1.x removed.
+#
+# Install into the conda env:  pip install -r requirements.txt
+
+# --- Web / API ---
+fastapi
+uvicorn[standard]
+python-multipart
+python-dotenv
+
+# --- LangChain (0.3 line — do NOT upgrade to 1.x) ---
+langchain>=0.3,<0.4
+langchain-core>=0.3,<0.4
+langchain-community>=0.3,<0.4
+langchain-experimental>=0.3,<0.4
+langchain-text-splitters>=0.3,<0.4
+langchain-google-genai>=2,<3
+langchain-huggingface>=0.1,<0.3
+langchain-milvus>=0.1,<0.2
+langsmith
+
+# --- Google Gemini ---
+google-generativeai
+google-genai
+
+# --- Vector store / cache / db ---
+# pymilvus MUST stay on 2.5.x: 2.6's MilvusClient doesn't register its alias in
+# the ORM connections registry that langchain-milvus 0.1.x reads, which breaks
+# retrieval ("should create connection first"). 2.5 talks fine to a Milvus 2.6 server.
+pymilvus>=2.5,<2.6
+redis
+sqlalchemy
+pymysql
+
+# --- PDF / OCR / extraction ---
+pdfplumber
+pdf2image
+pillow
+langdetect
+boto3
+
+# --- Embeddings / ML ---
+sentence-transformers
+transformers
+torch
+accelerate
+huggingface-hub
+
+# --- Data / utils ---
+numpy
+pandas
+scikit-learn
+fuzzywuzzy
+python-Levenshtein
+watchdog
+pydantic>=2
+
+# --- Test ---
+pytest

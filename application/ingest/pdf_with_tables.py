@@ -116,8 +116,21 @@ def kmeans_column_clustering(x_centers: List[float], k: int = 2, random_state: i
         return [0 for _ in x_centers], [center, center]
 
     X = np.array(x_centers, dtype=float).reshape(-1, 1)
-    km = KMeans(n_clusters=k, n_init="auto", random_state=random_state)
-    labels = km.fit_predict(X)
+    try:
+        km = KMeans(n_clusters=k, n_init="auto", random_state=random_state)
+        labels = km.fit_predict(X)
+    except Exception as exc:  # pragma: no cover - platform BLAS/OpenMP threadpool issues
+        # On some platforms KMeans can fail while probing the BLAS/OpenMP
+        # threadpool (e.g. a bundled OpenMP DLL that won't load on Windows).
+        # This bilingual column filter is optional, so degrade gracefully:
+        # treat the page as a single column (filter becomes a no-op) instead of
+        # letting the whole ingestion crash.
+        logger.warning(
+            "KMeans column clustering failed; treating page as single column",
+            extra={"error": str(exc)},
+        )
+        center = float(np.mean(X))
+        return [0 for _ in x_centers], [center, center]
 
     centers = km.cluster_centers_.reshape(-1)
     order = np.argsort(centers)

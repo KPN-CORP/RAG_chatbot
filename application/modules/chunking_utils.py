@@ -96,6 +96,58 @@ def _normalize_header(h: str) -> str:
     return re.sub(r"\s+", " ", (h or "").strip())
 
 
+# Indonesian conjunctions/prepositions that stay lowercase in a title (unless
+# they are the first word). Prevents ``str.title()`` from producing awkward
+# breadcrumbs like "Cuti Dan Izin Khusus" instead of "Cuti dan Izin Khusus".
+_ID_TITLE_LOWER_WORDS = {
+    "dan", "atau", "yang", "di", "ke", "dari", "untuk", "pada", "dengan",
+    "atas", "dalam", "oleh", "serta", "per", "juga", "bagi", "antar", "tanpa",
+    "demi", "tentang", "terhadap",
+}
+
+# Domain acronyms/codes that must stay uppercase in breadcrumbs. Needed because
+# policy headers are often fully uppercase, so we cannot infer acronyms from
+# casing alone — we match against this allow-list instead.
+_ID_KNOWN_ACRONYMS = {
+    "KPN", "SOP", "HC", "HO", "HR", "HRD", "HRIS", "THR", "BPJS", "PKB", "SK",
+    "PT", "NPWP", "KTP", "PKWT", "PKWTT", "K3", "APD", "IRIS", "BU", "SP",
+    "PHK", "UMK", "UMP", "JHT", "JKK", "JKM", "JP", "CP", "DB", "PLT",
+}
+
+
+def _title_case_id(text: str) -> str:
+    """Title-case a header for breadcrumbs while respecting Indonesian usage.
+
+    Unlike ``str.title()`` this:
+    - keeps small conjunctions/prepositions lowercase (except as the first word),
+    - keeps known domain acronyms uppercase (``KPN``, ``SOP``, ``HO``, ...),
+    - title-cases the rest even when the source header is fully uppercase.
+    """
+
+    words = (text or "").split()
+    letters = [c for c in (text or "") if c.isalpha()]
+    all_caps = bool(letters) and all(c.isupper() for c in letters)
+
+    out: List[str] = []
+    for i, word in enumerate(words):
+        lower = word.lower()
+        core = re.sub(r"[^0-9A-Za-z]", "", word)
+        # Keep Indonesian minor words lowercase, except when they lead the title.
+        if i != 0 and lower in _ID_TITLE_LOWER_WORDS:
+            out.append(lower)
+            continue
+        # Known acronyms stay uppercase.
+        if core.upper() in _ID_KNOWN_ACRONYMS:
+            out.append(word.upper() if word.isalpha() else word)
+            continue
+        # In a mixed-case header, a short all-caps token is likely an acronym.
+        if not all_caps and core.isupper() and 0 < len(core) <= 5:
+            out.append(word)
+            continue
+        out.append(lower[:1].upper() + lower[1:] if lower else word)
+    return " ".join(out)
+
+
 def _is_header(line: str) -> bool:
     """Heuristically determine whether *line* looks like a header chunk."""
     stripped = line.strip()

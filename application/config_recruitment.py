@@ -19,8 +19,10 @@ SESSION_TTL_SECONDS = 60 * 60 * 24 * 7  # optional TTL for session keys
 MAX_HISTORY_MESSAGES = 20  # how many recent messages to load into memory
 
 
-gemini_chat_model = "models/gemini-2.5-flash-lite"  # pick the chat model you want
-gemini_image_model = "models/gemini-2.5-flash" 
+gemini_chat_model = "models/gemini-flash-latest"  # pick the chat model you want
+gemini_image_model = "models/gemini-flash-latest"
+# Deterministic answers (0) for precise, consistent responses. Read by app.py.
+llm_temperature = 0
 # When True, bilingual two-column pages keep only the left column when the
 # detected right-column language is non-Indonesian.
 enable_multilingual_column_filter = True

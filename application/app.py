@@ -1,5 +1,14 @@
 """FastAPI application entry point exposing chat and session endpoints."""
 
+import warnings
+
+# Silence noisy third-party FutureWarnings emitted at import time: the Python 3.10
+# end-of-life notice from google-api-core, and langchain-google-genai's notice that
+# the legacy google.generativeai package is deprecated. Both are informational and
+# do not affect runtime behavior. Registered before the triggering imports below.
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"google\.api_core.*")
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"langchain_google_genai.*")
+
 import os
 import tempfile
 import uuid
@@ -39,7 +48,7 @@ from modules.redis import (
 )
 from schemas.api import ChatReq, ChatResp, CreateSessionResp
 from schemas.rag_outputs import AnswerWithSources, format_docs_with_metadata
-from vectorstore.milvus_vectorstore import clear_vectorstore_cache, get_vectorstore
+from vectorstore.milvus_vectorstore import clear_vectorstore_cache, collection_exists, get_vectorstore
 
 from dotenv import load_dotenv
 
@@ -131,6 +140,29 @@ def _resolve_collection_name(config, business_unit: Optional[str]) -> str:
         )
     suffix = sanitize_collection_component(business_unit)
     return f"{config.collection_name}_{suffix}" if suffix else config.collection_name
+
+
+def _retrieve_context_documents(retriever, queries):
+    """Retrieve and merge unique documents for one or more queries.
+
+    Running retrieval for both the rewritten (standalone) question and the
+    original user question improves recall: if the rewrite drifts, the original
+    query still surfaces the relevant policy chunks. Documents are de-duplicated
+    by (filename, page, content) while preserving first-seen order.
+    """
+
+    seen: set = set()
+    merged: list = []
+    for query in queries:
+        if not query:
+            continue
+        for doc in retriever.invoke(query) or []:
+            key = (meta_filename(doc.metadata), meta_page(doc.metadata), doc.page_content)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(doc)
+    return merged
 
 
 def _ingest_pdf_upload(
@@ -341,7 +373,6 @@ def chat(req: ChatReq, profile: str = ""):
     config = get_runtime_config(profile)  # empty profile → application/config.py
     redis_client = get_redis_for_config(config)
     collection_name = _resolve_collection_name(config, req.business_unit)
-    vectorstore = get_vectorstore(config, collection_name=collection_name)
     session_ttl = _parse_ttl(config.SESSION_TTL_SECONDS)
 
     logger.info(
@@ -349,14 +380,31 @@ def chat(req: ChatReq, profile: str = ""):
         extra={"session_id": req.session_id, "profile": profile or "default", "collection_name": collection_name},
     )
 
-    if not vectorstore:
-        logger.error("Vectorstore is not initialised")
-        raise HTTPException(status_code=500, detail="Vectorstore not wired in server.")
     if not session_exists_for_client(redis_client, req.session_id, session_ttl):
         logger.warning(
             "Chat request for unknown session", extra={"session_id": req.session_id}
         )
         raise HTTPException(status_code=404, detail="Session not found. Create a session first.")
+
+    # A per-business-unit collection only exists once documents have been ingested
+    # for that unit. If it does not exist yet, respond gracefully with an empty
+    # answer instead of surfacing a low-level Milvus 500.
+    if not collection_exists(config, collection_name):
+        bu_name = getattr(req.business_unit, "value", req.business_unit)
+        logger.info(
+            "Requested collection has no documents; returning empty result",
+            extra={"session_id": req.session_id, "collection_name": collection_name},
+        )
+        message = "Maaf, saat ini belum ada dokumen yang tersedia untuk menjawab pertanyaan Anda"
+        message += f" pada unit bisnis {bu_name}." if bu_name else "."
+        if profile and profile.upper() == "IRIS":
+            return {"answer": message, "not_found": True}
+        return {"answer": message, "sources": [], "not_found": True}
+
+    vectorstore = get_vectorstore(config, collection_name=collection_name)
+    if not vectorstore:
+        logger.error("Vectorstore is not initialised")
+        raise HTTPException(status_code=500, detail="Vectorstore not wired in server.")
 
     mem = RedisConversationMemory(
         session_id=req.session_id,
@@ -395,7 +443,11 @@ def chat(req: ChatReq, profile: str = ""):
             extra={"env_var": config.google_api_key_name},
         )
         raise HTTPException(status_code=500, detail="LLM API key not configured.")
-    llm = ChatGoogleGenerativeAI(model=config.gemini_chat_model, google_api_key=api_key_value)
+    llm = ChatGoogleGenerativeAI(
+        model=config.gemini_chat_model,
+        google_api_key=api_key_value,
+        temperature=getattr(config, "llm_temperature", 0),
+    )
 
     contextualize_chain = (
         {
@@ -430,28 +482,31 @@ def chat(req: ChatReq, profile: str = ""):
         )
         raise HTTPException(status_code=500, detail="Failed to rewrite question for retrieval.")
 
-    if debug_retrieval:
-        # Fetch documents once so they can be reused for both the prompt context and
-        # any downstream logging/inspection in this function.
-        try:
-            retrieved_docs = retriever.invoke(standalone_question) or []
-            for i, d in enumerate(retrieved_docs, 1):
-                logger.info(
-                    {
-                        "i": i,
-                        "chunk": d.page_content,
-                        "filename": meta_filename(d.metadata),
-                        "page": meta_page(d.metadata),
-                        "keys": list(d.metadata.keys()),
-                    }
-                )
-        except Exception:
-            logger.exception("Failed to retrieve documents", extra={"session_id": req.session_id})
-            raise HTTPException(status_code=500, detail="Retriever error while fetching documents.")
+    # Retrieve context for BOTH the rewritten (standalone) question and the original
+    # user question, then merge unique documents. This guards against a drifting
+    # rewrite while keeping the more specific standalone results first.
+    try:
+        retrieved_docs = _retrieve_context_documents(
+            retriever, [standalone_question, req.question]
+        )
+    except Exception:
+        logger.exception("Failed to retrieve documents", extra={"session_id": req.session_id})
+        raise HTTPException(status_code=500, detail="Retriever error while fetching documents.")
 
-        # Prepare the formatted context string once so the chain does not need to
-        # re-run document formatting internally.
-        formatted_context = format_docs_with_metadata(retrieved_docs)
+    # Format the retrieved context once so the chain does not re-run retrieval.
+    formatted_context = format_docs_with_metadata(retrieved_docs)
+
+    if debug_retrieval:
+        for i, d in enumerate(retrieved_docs, 1):
+            logger.info(
+                {
+                    "i": i,
+                    "chunk": d.page_content,
+                    "filename": meta_filename(d.metadata),
+                    "page": meta_page(d.metadata),
+                    "keys": list(d.metadata.keys()),
+                }
+            )
 
     # Resolve the request-scoped QA prompt once so the final system message can
     # mention the caller's business unit without affecting profiles that still
@@ -479,47 +534,27 @@ def chat(req: ChatReq, profile: str = ""):
         ]
     ).partial(format_instructions=pydantic_parser.get_format_instructions())
 
-    # 6) Build the RAG chain (components + flow)
-    if debug_retrieval:
-        rag_chain = (
-            {
-                # The retrieved docs are pre-fetched and formatted to a context string above.
-                "context": (lambda x: x["context"]),
-                # The rewritten question is passed through unchanged.
-                "question": (lambda x: x["standalone_question"]),
-                # The 'chat_history' is passed through unchanged.
-                "chat_history": (lambda x: x["chat_history"]),
-            }
-            | qa_prompt
-            | llm
-            | RunnableLambda(extractor_wrapper)
-            | pydantic_parser
-        )
-    else:
-        rag_chain = (
-            {
-                # The retriever runs first, using the rewritten standalone question.
-                # Its output is passed to format_docs and becomes the 'context'.
-                "context": (lambda x: x["standalone_question"]) | retriever | format_docs_with_metadata,
-                # The rewritten question is passed through unchanged.
-                "question": (lambda x: x["standalone_question"]),
-                # The 'chat_history' is passed through unchanged.
-                "chat_history": (lambda x: x["chat_history"]),
-            }
-            | qa_prompt
-            | llm
-            | RunnableLambda(extractor_wrapper)
-            | pydantic_parser
-        )
+    # 6) Build the RAG chain. Context is pre-fetched above (dual-query retrieval),
+    # so the chain simply threads the prepared values through the prompt and LLM.
+    rag_chain = (
+        {
+            "context": (lambda x: x["context"]),
+            "question": (lambda x: x["standalone_question"]),
+            "chat_history": (lambda x: x["chat_history"]),
+        }
+        | qa_prompt
+        | llm
+        | RunnableLambda(extractor_wrapper)
+        | pydantic_parser
+    )
 
-    # 8) Invoke the chain; pass 'history' (string) and let the chain fetch context from retriever
+    # 8) Invoke the chain with the pre-fetched context and conversation history.
     invoke_payload = {
         "question": req.question,
         "standalone_question": standalone_question,
         "chat_history": chat_history_messages,
+        "context": formatted_context,
     }
-    if debug_retrieval:
-        invoke_payload["context"] = formatted_context
 
     try:
         # The invoke call now passes a single dictionary with all the required keys

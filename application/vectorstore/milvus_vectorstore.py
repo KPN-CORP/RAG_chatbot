@@ -97,6 +97,30 @@ def clear_vectorstore_cache() -> None:
     _build_vectorstore.cache_clear()
 
 
+def collection_exists(config, collection_name: str) -> bool:
+    """Return True if the given collection exists in Milvus.
+
+    Per-business-unit collections (``{collection_name}_{unit}``) are only created
+    once documents are ingested for that unit, so querying a unit with no data
+    would otherwise raise a low-level Milvus error. Callers use this to respond
+    gracefully instead of surfacing a 500.
+    """
+
+    from pymilvus import connections, utility
+
+    try:
+        connections.connect(
+            alias="default", host=config.milvus_host, port=str(config.milvus_port)
+        )
+        return utility.has_collection(collection_name, using="default")
+    except Exception:
+        logger.exception(
+            "Failed to check collection existence",
+            extra={"collection": collection_name},
+        )
+        return False
+
+
 def get_vectorstore(config, *, collection_name: Optional[str] = None) -> Milvus:
     """Initialise and return the Milvus vector store for the provided config."""
 

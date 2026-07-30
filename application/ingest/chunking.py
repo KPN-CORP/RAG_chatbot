@@ -20,6 +20,7 @@ from modules.chunking_utils import (
     _ends_sentence,
     _cluster_indent_buckets,      # NEW
     _indent_level_for_x,          # NEW
+    _title_case_id,
     boundary_join,
 )
 
@@ -112,7 +113,7 @@ def parse_policy_to_nodes(
         # 2) header?
         if _is_header(line):
             # extra safety: normalize header and clear pending bullet
-            title = _normalize_header(line).title()
+            title = _title_case_id(_normalize_header(line))
             path = [title]
             out.append({"path": path[:], "kind": "header", "line": title})
             pending_bullet_level = None
@@ -670,7 +671,7 @@ def build_chunks_from_pages(
                     first_line = raw
                     break
             if first_line and _is_header(_clean_line(first_line)):
-                section_hint = _clean_line(first_line).title()
+                section_hint = _title_case_id(_clean_line(first_line))
 
         # 1) Narrative → atomic rules
         if nar:
