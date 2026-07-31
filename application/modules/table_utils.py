@@ -532,25 +532,66 @@ def _lookup_borders(table, row_idx, col_idx):
     return (None, None)
 
 
+def _grid_has_cells(table) -> bool:
+    """Return True when a usable border grid was detected for the table."""
+
+    grid = table.get("grid") if isinstance(table, dict) else None
+    return bool(grid and grid.get("cells"))
+
+
 def clean_table(table):
+    """Fill merged (``None``) cells so every row is self-contained.
+
+    Merged cells reach us from pdfplumber as ``None``: a value that visually
+    spans several rows or columns is only present in the first cell of the span,
+    and the continuation cells are blank. If left unfilled, the downstream
+    cell-chunker (``table_cells_to_chunks``) drops those blanks, so the spanning
+    category/header is lost from every row it governs — a merged "Cuti Tahunan"
+    label disappears from all but its first row, and that row's "12 hari" chunk
+    no longer mentions the leave type. This is the root cause of merged
+    rows/columns producing inaccurate chunks.
+
+    Two regimes:
+
+    * **Border grid available** — trust it precisely. Only fill across an edge
+      that was *confirmed absent* (``has_top``/``has_left`` is ``False``). A
+      detected border (``True``) means the cell is genuinely empty, not merged.
+    * **No border grid** — fall back to a vertical forward-fill (carry the value
+      down from the cell above). Vertical spans are the dominant merge in policy
+      tables, and with no border signal at all this is strictly better than
+      dropping the value. Horizontal filling stays disabled here to avoid
+      merging genuinely distinct columns.
+    """
+
     table_dct = copy.deepcopy(table.get("table_dct", []))
+    has_grid = _grid_has_cells(table)
 
     for i, row in enumerate(table_dct):
         for j, cell in enumerate(row):
-            if cell is None:
-                has_left, has_upper = _lookup_borders(table, i, j)
+            if cell is not None:
+                continue
 
-                if has_upper is False and i > 0:
-                    up_val = table_dct[i - 1][j]
-                    if up_val is not None:
-                        table_dct[i][j] = up_val
-                        continue
+            has_left, has_upper = _lookup_borders(table, i, j)
 
-                if has_left is False and j > 0:
-                    left_val = table_dct[i][j - 1]
-                    if left_val is not None:
-                        table_dct[i][j] = left_val
-                        continue
+            # Vertical merge (value spans downward): fill from the cell above.
+            # Blocked only by a *confirmed* top border; permitted when the border
+            # is confirmed absent, or unknown while no grid exists at all.
+            if i > 0:
+                up_val = table_dct[i - 1][j]
+                if up_val is not None and (
+                    has_upper is False or (not has_grid and has_upper is None)
+                ):
+                    table_dct[i][j] = up_val
+                    continue
+
+            # Horizontal merge (value spans rightward): kept strict — only a
+            # confirmed missing left border fills, so distinct columns are never
+            # collapsed into each other.
+            if has_left is False and j > 0:
+                left_val = table_dct[i][j - 1]
+                if left_val is not None:
+                    table_dct[i][j] = left_val
+                    continue
 
     return table_dct
 

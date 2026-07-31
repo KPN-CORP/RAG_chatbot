@@ -78,6 +78,12 @@ DEFAULT_EXTRACTION_PROMPT = textwrap.dedent(
     - Simple or messy tables, multi-level headers, merged cells, nested tables, matrices, or non-grid layouts.
     - Narrative text, bullets, numbered lists, and footnotes outside tables.
 
+    MERGED / SPANNING CELLS (critical for correctness):
+    - When a header, category, or label cell is visually merged so that it spans several rows or several columns, treat its value as applying to EVERY row and column it covers.
+    - Repeat that spanning value in the semantic context of every chunk derived from the rows/columns it governs. For example, if a leftmost category cell is merged down over five rows, all five rows' chunks must carry that category.
+    - A cell that is blank ONLY because it sits underneath (or to the right of) a merged cell is NOT empty: use the spanning value, never leave it out.
+    - Never emit a chunk that drops the merged header/category that gives it meaning (e.g., do not output "12 hari" without the leave type it belongs to).
+
     1. Title chain:
     - Detect the main title and any subtitles or section titles.
     - For every chunk, include this title chain.
