@@ -1,0 +1,15 @@
+---
+# cPanel Git Version Control deployment tasks.
+# cPanel runs these from the repository root each time you click "Deploy HEAD Commit".
+# This app runs directly from the checked-out repo, so "deploy" means: refresh the
+# Python dependencies and restart the systemd services.
+deployment:
+  tasks:
+    - cd application
+    # Create the virtualenv on first deploy if it does not exist yet.
+    - test -d .venv || python3.10 -m venv .venv
+    # Install/update dependencies (fast when already satisfied).
+    - .venv/bin/pip install -q --upgrade pip -r requirements.txt
+    # Restart the services. Needs a passwordless-sudo rule (see below); if that is
+    # not configured this line no-ops instead of failing the deploy.
+    - sudo -n /usr/bin/systemctl restart nastari-api nastari-watcher || echo "restart skipped — configure sudoers to enable auto-restart"
