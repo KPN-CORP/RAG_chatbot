@@ -66,5 +66,5 @@ class ChatResp(BaseModel):
     """
 
     answer: str
-    sources: List[Source] | None = None
+    sources: Optional[List[Source]] = None
     not_found: bool = False

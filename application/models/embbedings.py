@@ -37,7 +37,7 @@ def get_huggingface_embeddings(semantic_embedding_model_name: str) -> HuggingFac
 def get_gemini_embeddings(
     embedding_model_name: str,
     api_key: Optional[str] = None,
-    google_api_key_env: str | None = None,
+    google_api_key_env: Optional[str] = None,
 ):
     """Return Google Gemini embeddings, attempting sensible API-key fallbacks."""
 

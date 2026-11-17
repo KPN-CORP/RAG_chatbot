@@ -271,8 +271,8 @@ def should_strip_trailing_number(
     line: str,
     y_top: float,
     page_height: float,
-    page_no: int | None = None,
-    captured_token: str | None = None,
+    page_no: Optional[int] = None,
+    captured_token: Optional[str] = None,
     top_bottom_band_ratio: float = 0.10,
 ) -> bool:
     """

@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -68,7 +69,7 @@ def _escape_prompt_braces(prompt: str, *, allow: set[str]) -> str:
     return escaped
 
 
-def build_qa_system_prompt(business_unit: str | None = None) -> str:
+def build_qa_system_prompt(business_unit: Optional[str] = None) -> str:
     """Build the QA system prompt for the active business unit.
 
     The /ask endpoint passes ``req.business_unit`` into this helper so the
