@@ -12,4 +12,4 @@ deployment:
     - .venv/bin/pip install -q --upgrade pip -r requirements.txt
     # Restart the services. Needs a passwordless-sudo rule (see below); if that is
     # not configured this line no-ops instead of failing the deploy.
-    - sudo -n /usr/bin/systemctl restart nastari-api nastari-watcher || echo "restart skipped — configure sudoers to enable auto-restart"
+    - sudo -n /usr/bin/systemctl restart nastari-api nastari-watcher || echo "restart skipped - configure sudoers to enable auto-restart"
