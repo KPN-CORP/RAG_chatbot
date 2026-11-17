@@ -1,7 +1,7 @@
 """Utilities for normalising chat history structures before LLM calls."""
 
 import json
-from typing import Iterable, List, Sequence
+from typing import Iterable, List, Sequence, Union
 
 from langchain.schema import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from logging_config import get_logger
@@ -10,7 +10,7 @@ logger = get_logger(__name__)
 
 
 def build_chat_history_messages(
-    raw: Iterable | Sequence | str | None,
+    raw: Union[Iterable, Sequence, str, None],
 ) -> List[BaseMessage]:
     """Normalise various history encodings into a list of LangChain messages."""
 
