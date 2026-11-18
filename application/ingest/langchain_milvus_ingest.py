@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Chunking
@@ -246,11 +247,68 @@ def embed_batch_texts(
         return [[0.001 * ((i + 1) % 10) for _ in range(dim)] for i, _ in enumerate(texts)]
 
     out: List[List[float]] = []
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
-        vs = embeddings.embed_documents(batch)
-        out.extend(vs)
+    for batch in _size_limited_batches(texts, batch_size, EMBED_MAX_BATCH_CHARS):
+        out.extend(_embed_with_retry(batch, embeddings))
     return out
+
+
+# Long chunks (e.g. a whole "Pasal") make a 32-item request large enough for the
+# Gemini embedding API to hit its deadline (504). Cap each request by total size
+# too, retry transient failures with backoff, and split a batch that keeps failing.
+EMBED_MAX_BATCH_CHARS = 20_000
+EMBED_MAX_RETRIES = 4
+EMBED_RETRY_BASE_SECONDS = 2.0
+_TRANSIENT_EMBED_ERRORS = (
+    "deadline", "504", "503", "500 internal", "429", "unavailable",
+    "resource exhausted", "resourceexhausted", "timed out", "timeout", "connection reset",
+)
+
+
+def _size_limited_batches(texts: List[str], max_items: int, max_chars: int):
+    """Yield consecutive batches capped by item count and total characters."""
+
+    batch: List[str] = []
+    size = 0
+    for text in texts:
+        if batch and (len(batch) >= max_items or size + len(text) > max_chars):
+            yield batch
+            batch, size = [], 0
+        batch.append(text)
+        size += len(text)
+    if batch:
+        yield batch
+
+
+def _is_transient_embed_error(exc: Exception) -> bool:
+    msg = f"{type(exc).__name__} {exc}".lower()
+    return any(token in msg for token in _TRANSIENT_EMBED_ERRORS)
+
+
+def _embed_with_retry(batch: List[str], embeddings) -> List[List[float]]:
+    """Embed one batch, retrying transient API errors and halving persistent failures."""
+
+    for attempt in range(EMBED_MAX_RETRIES + 1):
+        try:
+            return embeddings.embed_documents(batch)
+        except Exception as exc:
+            if not _is_transient_embed_error(exc):
+                raise
+            if attempt < EMBED_MAX_RETRIES:
+                wait = EMBED_RETRY_BASE_SECONDS * (2**attempt)
+                log.warning(
+                    "Embedding batch failed (%s); retry %d/%d in %.0fs (batch=%d texts)",
+                    exc, attempt + 1, EMBED_MAX_RETRIES, wait, len(batch),
+                )
+                time.sleep(wait)
+                continue
+            if len(batch) > 1:
+                mid = len(batch) // 2
+                log.warning("Embedding batch keeps failing; splitting %d texts in half", len(batch))
+                return _embed_with_retry(batch[:mid], embeddings) + _embed_with_retry(
+                    batch[mid:], embeddings
+                )
+            raise
+    raise RuntimeError("unreachable")  # pragma: no cover
 
 
 def store_chunks_to_milvus(
