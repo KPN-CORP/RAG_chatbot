@@ -7,14 +7,15 @@ LOG_LEVEL = "INFO" # options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 load_dotenv()
 
 redis_password = os.environ.get("REDIS_PASSWORD")
-redis_password =  redis_password+"@" if redis_password else ''
+# The password goes after ":" — "redis://secret@host" would send it as a USERNAME.
+redis_password = f":{redis_password}@" if redis_password else ""
 
 milvus_host = "127.0.0.1"
 milvus_port = "19530"
 collection_name = "internal_document"  # collection name in Milvus
 collection_description = "Internal Document for Rose's project"  # optional description
 
-REDIS_URL = f"redis://{redis_password}localhost:6379/1"
+REDIS_URL = os.environ.get("REDIS_URL_IRIS") or f"redis://{redis_password}localhost:6379/1"
 SESSION_TTL_SECONDS = 60 * 60 * 24 * 7  # optional TTL for session keys
 MAX_HISTORY_MESSAGES = 20  # how many recent messages to load into memory
 

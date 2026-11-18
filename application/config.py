@@ -8,7 +8,8 @@ LOG_LEVEL = "INFO" # options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 load_dotenv()
 
 redis_password = os.environ.get("REDIS_PASSWORD")
-redis_password =  redis_password+"@" if redis_password else ''
+# The password goes after ":" — "redis://secret@host" would send it as a USERNAME.
+redis_password = f":{redis_password}@" if redis_password else ""
 
 milvus_host = "127.0.0.1"
 milvus_port = "19530"

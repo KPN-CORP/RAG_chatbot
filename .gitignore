@@ -18,3 +18,9 @@ application/volumes/*
 CLAUDE.md
 /application/storage
 /application/.env
+
+# Local knowledge-base folders watched by modules.watcher (production uses
+# folders outside the repo). Keep them out of git so branch switches/stashes
+# never remove them — the watcher would then delete their vectors from Milvus.
+/knowledgebased/
+/knowledgebased_IRIS/
