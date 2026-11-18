@@ -394,6 +394,8 @@ def ingest_pages_to_milvus(
         sim_threshold=sim_threshold,
         use_percentile=use_percentile,
         percentile=percentile,
+        legal_chunking=getattr(config, "legal_document_chunking", True),
+        legal_max_chars=getattr(config, "legal_chunk_max_chars", 2500),
     )
 
     return store_chunks_to_milvus(
