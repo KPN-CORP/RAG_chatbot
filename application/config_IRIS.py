@@ -28,6 +28,10 @@ use_gemini_chunking = False
 # When True, bilingual two-column pages keep only the left column when the
 # detected right-column language is non-Indonesian.
 enable_multilingual_column_filter = True
+# Legal documents (UU/PP/Peraturan Perusahaan with "Pasal N" headings) are chunked
+# one Pasal per chunk instead of line-by-line. Long articles split at ayat boundaries.
+legal_document_chunking = True
+legal_chunk_max_chars = 2500
 embedding_model_name = "models/gemini-embedding-001"  # embedding model for Gemini
 semantic_embedding_model_name = "LazarusNLP/all-indo-e5-small-v4"  # embedding model for semantic search
 
@@ -35,7 +39,7 @@ top_k_retrieval = 7
 
 google_api_key_name = "GEMINI_API_KEY_IRIS"  # environment variable name for Gemini/Google API key
 
-WATCH_DIR = r"/home/hcispanel/kpn-iris/storage/app/private/knowledge-base/"  # change this
+WATCH_DIR = os.environ.get("WATCH_DIR_IRIS") or r"/home/hcispanel/kpn-iris/storage/app/private/knowledge-base/"  # change this
 VALID_EXTS = {".pdf", ".docx", ".txt"}  # adapt to your project
 
 def _escape_prompt_braces(prompt: str, *, allow: set[str]) -> str:
