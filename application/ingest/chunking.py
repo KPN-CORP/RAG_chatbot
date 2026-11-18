@@ -24,6 +24,8 @@ from modules.chunking_utils import (
     boundary_join,
 )
 
+from ingest.legal_chunking import build_legal_chunks, is_legal_document
+
 logger = logging.getLogger(__name__)
 
 # -----------------------------
@@ -605,6 +607,8 @@ def build_chunks_from_pages(
     sim_threshold: float = 0.82,
     use_percentile: bool = False,
     percentile: int = 90,
+    legal_chunking: bool = True,
+    legal_max_chars: int = 2500,
 ) -> List[Dict[str, Any]]:
     """
     pages: list of dicts like:
@@ -615,10 +619,26 @@ def build_chunks_from_pages(
       - Narrative → nodes → semantic grouping → (optional) length fallback → policy_rule chunks.
       - OCR Gemini rules (when present) are treated as already-structured policy rules.
       - Tables → cell-level chunks (one chunk per cell).
+      - Legal documents (UU/PP/Peraturan Perusahaan with ``Pasal N`` headings):
+        narrative is chunked one ``Pasal`` per chunk across page boundaries
+        instead of line/semantic grouping (``legal_chunking``).
     """
     built: List[Dict[str, Any]] = []
     section_carry: Optional[str] = None
     pages_sorted = sorted(pages, key=lambda p: (p.get("page") is None, p.get("page")))
+
+    # Pages already covered by Gemini chunks/rules keep that path; the rest of
+    # the narrative of an article-structured legal document is chunked per Pasal.
+    legal_pages = [
+        pg for pg in pages_sorted if not (pg.get("gemini_chunks") or pg.get("gemini_rules"))
+    ]
+    use_legal = bool(legal_chunking and legal_pages and is_legal_document(legal_pages))
+    if use_legal:
+        legal_chunks = build_legal_chunks(
+            legal_pages, doc_id=doc_id, source=source, max_chars=legal_max_chars
+        )
+        logger.info(f"Legal document detected: {len(legal_chunks)} Pasal-level chunks for {source}")
+        built.extend(legal_chunks)
 
     for pg in pages_sorted:
         page_no = pg.get("page")
@@ -673,8 +693,8 @@ def build_chunks_from_pages(
             if first_line and _is_header(_clean_line(first_line)):
                 section_hint = _title_case_id(_clean_line(first_line))
 
-        # 1) Narrative → atomic rules
-        if nar:
+        # 1) Narrative → atomic rules (already handled per Pasal for legal docs)
+        if nar and not use_legal:
             nodes = parse_policy_to_nodes(nar, section_hint=section_hint, lines_with_meta=lines_with_meta)
 
             # track carry-over header
