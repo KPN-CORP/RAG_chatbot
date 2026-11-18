@@ -32,13 +32,17 @@ __all__ = [
 
 # OCR frequently confuses digits with letters inside article numbers
 # ("Pasal 23O", "Pasal 1O", "(l)").
-_OCR_DIGIT_MAP = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "|": "1"})
-_NUM_TOKEN = r"[0-9OoIl|]{1,4}"
+_OCR_DIGIT_MAP = str.maketrans(
+    {"O": "0", "o": "0", "I": "1", "l": "1", "L": "1", "|": "1", "T": "7"}
+)
+_NUM_TOKEN = r"[0-9OoIlLT|]{1,4}"
+# "Pasal" and its common OCR misreads: PasaJ, PasaI, PasaT, Pasa1, Pasa7, Pasd, PaseJ.
+_PASAL_WORD = r"Pas(?:al|aJ|aI|aT|a1|a7|d|eJ|el)"
 
-# "Pasal 230", "Pasal23O", "Pasal 17..", "Pasal 230A" — the whole line, so
-# in-text references like "Pasal 20 ayat (1) wajib ..." are not headings.
-PASAL_HEAD_RE = re.compile(rf"^Pasal\s*({_NUM_TOKEN})\s*([A-Z])?\s*[.\s]*$")
-PASAL_BARE_RE = re.compile(r"^Pasal\s*[.:]?\s*$")
+# "Pasal 230", "Pasal23O", "Pasal 17..", "Pasal 230A", "PasaJ228" — the whole
+# line, so in-text references like "Pasal 20 ayat (1) wajib ..." are not headings.
+PASAL_HEAD_RE = re.compile(rf"^{_PASAL_WORD}\s*({_NUM_TOKEN})\s*([A-Z])?\s*[.\s]*$")
+PASAL_BARE_RE = re.compile(rf"^{_PASAL_WORD}\s*[.:]?\s*$")
 NUM_ONLY_RE = re.compile(rf"^({_NUM_TOKEN})\s*([A-Z])?\s*[.\s]*$")
 BAB_RE = re.compile(r"^BAB\s*([IVXLC]+|\d+)\b\.?\s*(.*)$")
 BAGIAN_RE = re.compile(r"^Bagian\s*(Ke[a-z]+|Pertama)\b\s*(.*)$")
@@ -211,7 +215,6 @@ def build_legal_chunks(
     bab = bab_title = bagian = paragraf = None
     in_penjelasan = False
     pending_title: Optional[str] = None  # which heading still expects a title line
-    awaiting_pasal_number = False
 
     units: List[Dict[str, Any]] = []
     current: Dict[str, Any] = {"pasal": None, "page": None, "lines": [], "path": []}
@@ -234,31 +237,61 @@ def build_legal_chunks(
             units.append(current)
         current = {"pasal": pasal, "page": page, "lines": [], "path": context_path()}
 
+    last_num: Optional[int] = None  # number of the current Pasal, for the monotonic check
+    bare_pasal_page: Optional[int] = None  # page of a pending "Pasal" line awaiting its number
+
+    def is_next_article(num: str, suffix: str) -> bool:
+        """Article numbers only increase; a lower/far-off number is an in-text reference.
+
+        Guards against lines like "... Pasal" + "81" inside Pasal 311 (a citation
+        wrapped by OCR) being mistaken for a new article heading.
+        """
+
+        n = int(num)
+        if last_num is None:
+            return True
+        if suffix and n == last_num:  # "Pasal 230A" after "Pasal 230"
+            return True
+        return last_num < n <= last_num + 15
+
+    def open_article(num: str, suffix: str, page: Optional[int]) -> None:
+        nonlocal last_num, pending_title
+        pending_title = None
+        last_num = int(num)
+        start_unit(num + suffix, page)
+
     for page, line in _iter_lines(pages):
-        if _is_furniture(line) and not (awaiting_pasal_number and NUM_ONLY_RE.match(line)):
+        if _is_furniture(line) and not (bare_pasal_page is not None and NUM_ONLY_RE.match(line)):
             continue
 
-        if awaiting_pasal_number:
-            awaiting_pasal_number = False
+        if bare_pasal_page is not None:
+            bare_page, bare_pasal_page = bare_pasal_page, None
             m = NUM_ONLY_RE.match(line)
-            if m:
-                current["pasal"] = _fix_ocr_number(m.group(1)) + (m.group(2) or "")
+            if m and is_next_article(_fix_ocr_number(m.group(1)), m.group(2) or ""):
+                open_article(_fix_ocr_number(m.group(1)), m.group(2) or "", bare_page)
                 continue
+            # Not a heading: keep the word as body text (unless a real heading follows,
+            # i.e. the bare "Pasal" was a page-bottom catchword) and handle this line normally.
+            if not (PASAL_HEAD_RE.match(line) or PASAL_BARE_RE.match(line)):
+                current["lines"].append("Pasal")
 
         m = PASAL_HEAD_RE.match(line)
         if m:
-            pending_title = None
-            start_unit(_fix_ocr_number(m.group(1)) + (m.group(2) or ""), page)
+            num, suffix = _fix_ocr_number(m.group(1)), m.group(2) or ""
+            if is_next_article(num, suffix):
+                open_article(num, suffix, page)
+            elif not (current["pasal"] == num + suffix and not current["lines"]):
+                # A lower/far-off number is an in-text reference. (The same number
+                # right after its heading is the page-bottom catchword repeat: drop it.)
+                current["lines"].append(line)
             continue
         if PASAL_BARE_RE.match(line):
-            pending_title = None
-            start_unit(None, page)
-            current["pasal"] = "?"
-            awaiting_pasal_number = True
+            bare_pasal_page = page
             continue
 
         if PENJELASAN_RE.match(line):
             in_penjelasan = True
+            last_num = None  # the explanation restarts at Pasal 1
             bab = bab_title = bagian = paragraf = None
             pending_title = None
             start_unit(None, page)

@@ -128,3 +128,18 @@ def test_page_catchword_not_duplicated_and_long_lines_split():
     assert p1.count("j. dalam") == 1
     assert "j. dalam keadaan disabilitas tetap." in p1
     assert max(len(c["chunk_text"]) for c in chunks) < 1200
+
+
+def test_in_text_pasal_reference_is_not_a_new_article():
+    text = (
+        "Pasal 310\nx.\nPasal 311\nPada saat Undang-Undang ini mulai berlaku:\n"
+        "b. Bab IV Bagian Kesatu Pasal 80 huruf a dan Bagian Kedua\nPasal\n81\n"
+        "dalam lampiran Undang-Undang Nomor 6 Tahun 2023, dicabut.\n"
+        "Pasal 23\nayat (2) juga dicabut.\nPasal 312\nPeraturan pelaksanaan.\nPasal 313\nBerlaku."
+    )
+    chunks = build_legal_chunks([{"page": 127, "narrative_text": text}], doc_id="d", source="UU.pdf")
+    heads = [c["breadcrumb"].split(" > ")[-1] for c in chunks]
+    assert heads == ["Pasal 310", "Pasal 311", "Pasal 312", "Pasal 313"]
+    p311 = chunks[1]["chunk_text"]
+    assert "Bagian Kedua Pasal 81 dalam lampiran" in p311
+    assert "Pasal 23 ayat (2) juga dicabut." in p311
